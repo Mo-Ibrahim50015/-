@@ -1,0 +1,6 @@
+{
+  "name": "مصروفي",
+  "description": "تطبيق مصروفي لإدارة المصاريف الشخصية والدخل والمديونيات والتقارير المالية والتحليلات بتخزين محلي آمن بالكامل.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

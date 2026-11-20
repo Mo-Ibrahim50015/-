@@ -1,0 +1,132 @@
+{
+  "entities": {
+    "CloudBackupSummary": {
+      "title": "CloudBackupSummary",
+      "description": "Per-user cloud backup metadata and non-secret app preferences snapshot",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "transactionCount": { "type": "integer" },
+        "categoryCount": { "type": "integer" },
+        "accountCount": { "type": "integer" },
+        "defaultCurrency": { "type": "string" },
+        "language": { "type": "string" },
+        "themeMode": { "type": "string" },
+        "quickDeleteMode": { "type": "boolean" },
+        "dailyReminderEnabled": { "type": "boolean" },
+        "dailyReminderTime": { "type": "string" },
+        "monthlyBudgetLimitMinor": { "type": "integer" },
+        "lastSelectedSource": { "type": "string" },
+        "userName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "ownerEmail",
+        "transactionCount",
+        "categoryCount",
+        "accountCount",
+        "defaultCurrency",
+        "language",
+        "themeMode",
+        "quickDeleteMode",
+        "dailyReminderEnabled",
+        "dailyReminderTime",
+        "monthlyBudgetLimitMinor",
+        "lastSelectedSource",
+        "userName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CloudBackupTransaction": {
+      "title": "CloudBackupTransaction",
+      "description": "Individual backed-up transaction record owned by the signed-in user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string" },
+        "amountMinor": { "type": "integer" },
+        "currency": { "type": "string" },
+        "source": { "type": "string" },
+        "category": { "type": "string" },
+        "date": { "type": "string" },
+        "time": { "type": "string" },
+        "note": { "type": "string" },
+        "localCreatedAt": { "type": "integer" },
+        "debt": { "type": "boolean" },
+        "debtSettled": { "type": "boolean" },
+        "itemName": { "type": "string" },
+        "debtParty": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId",
+        "type",
+        "amountMinor",
+        "currency",
+        "source",
+        "category",
+        "date",
+        "time",
+        "note",
+        "localCreatedAt",
+        "debt",
+        "debtSettled",
+        "itemName",
+        "debtParty",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CloudBackupCategory": {
+      "title": "CloudBackupCategory",
+      "description": "Backed-up custom or default transaction category owned by the signed-in user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "iconKey": { "type": "string" },
+        "kind": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "iconKey", "kind", "createdAt", "updatedAt"]
+    },
+    "CloudBackupAccount": {
+      "title": "CloudBackupAccount",
+      "description": "Backed-up wallet or payment source owned by the signed-in user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "iconKey": { "type": "string" },
+        "currency": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "iconKey", "currency", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/CloudBackupSummary" },
+      "description": "Per-user cloud backup metadata summary document"
+    },
+    "/users/{userId}/backup_transactions/{txId}": {
+      "schema": { "$ref": "#/entities/CloudBackupTransaction" },
+      "description": "Per-user backed-up transaction records"
+    },
+    "/users/{userId}/backup_categories/{catId}": {
+      "schema": { "$ref": "#/entities/CloudBackupCategory" },
+      "description": "Per-user backed-up category records"
+    },
+    "/users/{userId}/backup_accounts/{accId}": {
+      "schema": { "$ref": "#/entities/CloudBackupAccount" },
+      "description": "Per-user backed-up wallet/account records"
+    }
+  }
+}

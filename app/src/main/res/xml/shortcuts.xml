@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="add_tx"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_add_short"
+        android:shortcutLongLabel="@string/shortcut_add_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aistudio.mizanity.kxqvmr"
+            android:targetClass="com.example.MainActivity">
+            <extra android:name="extra_initial_tab" android:value="add" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="open_debts"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_debts_short"
+        android:shortcutLongLabel="@string/shortcut_debts_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aistudio.mizanity.kxqvmr"
+            android:targetClass="com.example.MainActivity">
+            <extra android:name="extra_initial_tab" android:value="debts" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="open_payments"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher_round"
+        android:shortcutShortLabel="@string/shortcut_payments_short"
+        android:shortcutLongLabel="@string/shortcut_payments_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aistudio.mizanity.kxqvmr"
+            android:targetClass="com.example.MainActivity">
+            <extra android:name="extra_initial_tab" android:value="payments" />
+        </intent>
+    </shortcut>
+</shortcuts>

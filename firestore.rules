@@ -1,0 +1,188 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null && request.auth.uid.size() > 0;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function isNonEmptyString(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function isOptionalString(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isValidTimestamp(val) {
+      return val is timestamp && val <= request.time;
+    }
+
+    function isValidBackupSummary(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'ownerEmail', 'transactionCount', 'categoryCount', 'accountCount',
+          'defaultCurrency', 'language', 'themeMode', 'quickDeleteMode',
+          'dailyReminderEnabled', 'dailyReminderTime', 'monthlyBudgetLimitMinor',
+          'lastSelectedSource', 'userName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'ownerEmail', 'transactionCount', 'categoryCount', 'accountCount',
+          'defaultCurrency', 'language', 'themeMode', 'quickDeleteMode',
+          'dailyReminderEnabled', 'dailyReminderTime', 'monthlyBudgetLimitMinor',
+          'lastSelectedSource', 'userName', 'createdAt', 'updatedAt'
+        ])
+        && data.userId == userId
+        && isOptionalString(data.ownerEmail, 254)
+        && data.transactionCount is int && data.transactionCount >= 0 && data.transactionCount <= 100000
+        && data.categoryCount is int && data.categoryCount >= 0 && data.categoryCount <= 5000
+        && data.accountCount is int && data.accountCount >= 0 && data.accountCount <= 5000
+        && isNonEmptyString(data.defaultCurrency, 12)
+        && data.language in ['ar', 'en']
+        && data.themeMode in ['light', 'dark', 'system']
+        && data.quickDeleteMode is bool
+        && data.dailyReminderEnabled is bool
+        && isNonEmptyString(data.dailyReminderTime, 10)
+        && data.monthlyBudgetLimitMinor is int && data.monthlyBudgetLimitMinor >= 0
+        && isOptionalString(data.lastSelectedSource, 120)
+        && isOptionalString(data.userName, 80)
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBackupTransaction(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'type', 'amountMinor', 'currency', 'source', 'category',
+          'date', 'time', 'note', 'localCreatedAt', 'debt', 'debtSettled',
+          'itemName', 'debtParty', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'type', 'amountMinor', 'currency', 'source', 'category',
+          'date', 'time', 'note', 'localCreatedAt', 'debt', 'debtSettled',
+          'itemName', 'debtParty', 'createdAt', 'updatedAt'
+        ])
+        && data.userId == userId
+        && data.type in ['expense', 'income']
+        && data.amountMinor is int && data.amountMinor >= 0
+        && isNonEmptyString(data.currency, 12)
+        && isNonEmptyString(data.source, 120)
+        && isNonEmptyString(data.category, 120)
+        && isNonEmptyString(data.date, 20)
+        && isNonEmptyString(data.time, 20)
+        && isOptionalString(data.note, 500)
+        && data.localCreatedAt is int && data.localCreatedAt >= 0
+        && data.debt is bool
+        && data.debtSettled is bool
+        && isOptionalString(data.itemName, 160)
+        && isOptionalString(data.debtParty, 160)
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBackupCategory(data, userId) {
+      return data.keys().hasAll(['userId', 'name', 'iconKey', 'kind', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'name', 'iconKey', 'kind', 'createdAt', 'updatedAt'])
+        && data.userId == userId
+        && isNonEmptyString(data.name, 120)
+        && isNonEmptyString(data.iconKey, 64)
+        && data.kind in ['expense', 'income']
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBackupAccount(data, userId) {
+      return data.keys().hasAll(['userId', 'name', 'iconKey', 'currency', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'name', 'iconKey', 'currency', 'createdAt', 'updatedAt'])
+        && data.userId == userId
+        && isNonEmptyString(data.name, 120)
+        && isNonEmptyString(data.iconKey, 64)
+        && isNonEmptyString(data.currency, 12)
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    match /users/{userId} {
+      match /backups/{backupId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(backupId)
+          && isValidBackupSummary(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && isValidId(backupId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'ownerEmail', 'transactionCount', 'categoryCount', 'accountCount',
+            'defaultCurrency', 'language', 'themeMode', 'quickDeleteMode',
+            'dailyReminderEnabled', 'dailyReminderTime', 'monthlyBudgetLimitMinor',
+            'lastSelectedSource', 'userName', 'updatedAt'
+          ])
+          && isValidBackupSummary(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /backup_transactions/{txId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(txId)
+          && isValidBackupTransaction(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && isValidId(txId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'type', 'amountMinor', 'currency', 'source', 'category',
+            'date', 'time', 'note', 'localCreatedAt', 'debt', 'debtSettled',
+            'itemName', 'debtParty', 'updatedAt'
+          ])
+          && isValidBackupTransaction(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /backup_categories/{catId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(catId)
+          && isValidBackupCategory(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && isValidId(catId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name', 'iconKey', 'kind', 'updatedAt'
+          ])
+          && isValidBackupCategory(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+
+      match /backup_accounts/{accId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(accId)
+          && isValidBackupAccount(request.resource.data, userId);
+        allow update: if isOwner(userId)
+          && isValidId(accId)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name', 'iconKey', 'currency', 'updatedAt'
+          ])
+          && isValidBackupAccount(request.resource.data, userId);
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">مصروفي</string>
+    <string name="nav_home">الرئيسية</string>
+    <string name="nav_add">إضافة عملية</string>
+    <string name="nav_log">السجل</string>
+    <string name="nav_reports">التقارير</string>
+    <string name="nav_settings">الإعدادات</string>
+    <string name="title_home">الرئيسية</string>
+    <string name="title_add">إضافة عملية</string>
+    <string name="title_log">سجل العمليات</string>
+    <string name="title_reports">التقارير والتحليلات</string>
+    <string name="title_settings">الإعدادات</string>
+    <string name="cd_notifications">الإشعارات والتنبيهات</string>
+    <string name="cd_toggle_theme">تبديل الوضع الليلي</string>
+    <string name="cd_switch_language">تبديل اللغة</string>
+    <string name="cd_profile">الملف الشخصي والإعدادات</string>
+    <string name="cd_wallet_logo">شعار محفظة مصروفي</string>
+    <string name="widget_description">أيقونة مصروفي السريعة على سطح المكتب</string>
+    <string name="shortcut_add_short">إضافة عملية</string>
+    <string name="shortcut_add_long">تسجيل مصروف أو دخل جديد</string>
+    <string name="shortcut_debts_short">المديونيات</string>
+    <string name="shortcut_debts_long">عرض المديونيات القائمة</string>
+    <string name="shortcut_payments_short">المدفوعات</string>
+    <string name="shortcut_payments_long">عرض المدفوعات المسددة</string>
+</resources>

@@ -1,6 +1,8 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -49,19 +51,26 @@ import com.example.ui.components.BackupDrawerMode
 import com.example.ui.components.BackupSideDrawerOverlay
 import com.example.ui.components.MizanityBottomBar
 import com.example.ui.components.MizanityTopBar
-import com.example.ui.components.NotificationsSheet
+import com.example.ui.components.NotificationCenterSheet
 import com.example.ui.components.SplashVideoScreen
 import com.example.ui.screens.AddTransactionScreen
 import com.example.ui.screens.DebtsScreen
 import com.example.ui.screens.FlowDetailsScreen
+import com.example.ui.screens.FlowDrillDownScreen
+import com.example.ui.screens.FlowDrillDownSpec
 import com.example.ui.screens.HomeScreen
+import com.example.ui.screens.LifetimeMoneyScreen
 import com.example.ui.screens.LogScreen
+import com.example.ui.screens.MoneyFlowGuideScreen
+import com.example.ui.screens.ObligationsScreen
 import com.example.ui.screens.PaymentsScreen
 import com.example.ui.screens.ReportsScreen
+import com.example.ui.screens.ReportsTopTab
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SettingsSection
 import com.example.ui.theme.LocalSereneColors
 import com.example.ui.theme.MizanityTheme
+import com.example.util.PaymentNotificationManager
 import com.example.util.observeFirebaseUserFlow
 import com.example.util.signInWithGoogleAccountChooser
 import com.example.util.signOutGoogleAccount
@@ -171,15 +180,19 @@ private fun MainAppShell(
 
     val alertSummary by viewModel.alertSummary.collectAsStateWithLifecycle()
     val allTransactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val allObligations by viewModel.obligations.collectAsStateWithLifecycle()
     val isCloudBackupBusy by viewModel.isCloudBackupBusy.collectAsStateWithLifecycle()
     val cloudBackupSummary by viewModel.cloudBackupSummary.collectAsStateWithLifecycle()
     val cloudBackupError by viewModel.cloudBackupError.collectAsStateWithLifecycle()
     val firebaseUser by remember { observeFirebaseUserFlow() }
         .collectAsStateWithLifecycle(initialValue = null)
 
-    // Saveable tab, section, and backup side-drawer state
+    // Saveable tab, section, drill-down, and backup side-drawer state
     var currentTabName by rememberSaveable { mutableStateOf(AppTab.HOME.name) }
     var previousTabName by rememberSaveable { mutableStateOf(AppTab.HOME.name) }
+    var guideOriginTabName by rememberSaveable { mutableStateOf(AppTab.HOME.name) }
+    var reportsRequestedTabName by rememberSaveable { mutableStateOf(ReportsTopTab.REPORTS.name) }
+    var reportsTabNonce by rememberSaveable { mutableStateOf(0) }
     var settingsTargetSectionName by rememberSaveable { mutableStateOf(SettingsSection.PERSONAL_INFO.name) }
     var addInitialType by rememberSaveable { mutableStateOf(TransactionType.EXPENSE) }
     var addInitialDebt by rememberSaveable { mutableStateOf(false) }
@@ -188,6 +201,8 @@ private fun MainAppShell(
     var showNotificationsSheet by remember { mutableStateOf(false) }
     var backupDrawerModeName by rememberSaveable { mutableStateOf<String?>(null) }
     var isGoogleAuthBusy by remember { mutableStateOf(false) }
+    var activeDrillDownSpec by remember { mutableStateOf<FlowDrillDownSpec?>(null) }
+    var drillDownReturnTabName by rememberSaveable { mutableStateOf<String?>(null) }
 
     val backupDrawerMode = remember(backupDrawerModeName) {
         backupDrawerModeName?.let { raw ->
@@ -212,6 +227,9 @@ private fun MainAppShell(
     }
     val settingsTargetSection = remember(settingsTargetSectionName) {
         runCatching { SettingsSection.valueOf(settingsTargetSectionName) }.getOrDefault(SettingsSection.PERSONAL_INFO)
+    }
+    val reportsRequestedTab = remember(reportsRequestedTabName) {
+        runCatching { ReportsTopTab.valueOf(reportsRequestedTabName) }.getOrDefault(ReportsTopTab.REPORTS)
     }
 
     // Hoisted ActivityResult launchers registered ONCE at shell root (never unregistered on tab switches)
@@ -262,6 +280,20 @@ private fun MainAppShell(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) viewModel.restoreJsonBackupFromUri(uri)
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    val requestNotificationPermissionIfNeeded: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !PaymentNotificationManager.hasNotificationPermission(context)
+        ) {
+            runCatching {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
     }
 
     // Safe launch wrapper: opens Device Files (DocumentsUI) for image selection with zero-permission fallbacks
@@ -377,6 +409,10 @@ private fun MainAppShell(
                     paymentsInitialTab = "all"
                     currentTabName = AppTab.PAYMENTS.name
                 }
+                AppTab.OBLIGATIONS.route -> {
+                    previousTabName = AppTab.HOME.name
+                    currentTabName = AppTab.OBLIGATIONS.name
+                }
                 AppTab.REPORTS.route -> currentTabName = AppTab.REPORTS.name
                 AppTab.LOG.route -> currentTabName = AppTab.LOG.name
                 AppTab.SETTINGS.route -> currentTabName = AppTab.SETTINGS.name
@@ -391,8 +427,11 @@ private fun MainAppShell(
 
     val isDetailScreen = currentTab == AppTab.DEBTS ||
         currentTab == AppTab.PAYMENTS ||
+        currentTab == AppTab.OBLIGATIONS ||
         currentTab == AppTab.INCOME_DETAILS ||
-        currentTab == AppTab.EXPENSE_DETAILS
+        currentTab == AppTab.EXPENSE_DETAILS ||
+        currentTab == AppTab.LIFETIME_MONEY ||
+        currentTab == AppTab.MONEY_FLOW_GUIDE
 
     LaunchedEffect(viewModel) {
         viewModel.toastMessages.collect { msg ->
@@ -404,25 +443,66 @@ private fun MainAppShell(
         }
     }
 
-    // Back press returns to originating screen (Home or Reports) from detail screens, or Home from secondary tabs
-    BackHandler(enabled = currentTab != AppTab.HOME) {
-        currentTabName = if (isDetailScreen) previousTab.name else AppTab.HOME.name
+    val openFlowDrillDown: (FlowDrillDownSpec, AppTab) -> Unit = { spec, origin ->
+        drillDownReturnTabName = origin.name
+        currentTabName = AppTab.REPORTS.name
+        activeDrillDownSpec = spec
     }
 
-    val screenTitle = when (currentTab) {
+    val closeFlowDrillDown: () -> Unit = {
+        val returnTab = drillDownReturnTabName
+        activeDrillDownSpec = null
+        drillDownReturnTabName = null
+        if (!returnTab.isNullOrBlank()) {
+            currentTabName = returnTab
+        }
+    }
+
+    val navigateBackFromDetail: () -> Unit = {
+        when {
+            activeDrillDownSpec != null -> {
+                closeFlowDrillDown()
+            }
+            currentTab == AppTab.LIFETIME_MONEY && previousTab == AppTab.MONEY_FLOW_GUIDE -> {
+                previousTabName = guideOriginTabName
+                currentTabName = AppTab.MONEY_FLOW_GUIDE.name
+            }
+            currentTab == AppTab.MONEY_FLOW_GUIDE -> {
+                currentTabName = guideOriginTabName
+            }
+            isDetailScreen -> {
+                currentTabName = previousTab.name
+            }
+            else -> {
+                currentTabName = AppTab.HOME.name
+            }
+        }
+    }
+
+    // Back press returns to originating screen (Home or Reports) from detail screens, or Home from secondary tabs
+    BackHandler(enabled = activeDrillDownSpec != null || currentTab != AppTab.HOME) {
+        navigateBackFromDetail()
+    }
+
+    val screenTitle = activeDrillDownSpec?.title ?: when (currentTab) {
         AppTab.HOME -> tr(isArabic, "الرئيسية", "Home")
         AppTab.ADD -> tr(isArabic, "إضافة عملية", "Add Transaction")
         AppTab.LOG -> tr(isArabic, "سجل العمليات", "Transactions Log")
         AppTab.REPORTS -> tr(isArabic, "التقارير والتحليلات", "Reports & Analytics")
         AppTab.SETTINGS -> tr(isArabic, "الإعدادات", "Settings")
-        AppTab.DEBTS -> tr(isArabic, "المديونيات عليّ", "Debts Owed")
-        AppTab.PAYMENTS -> tr(isArabic, "المدفوعات", "Payments")
+        AppTab.DEBTS -> tr(isArabic, "كل المبالغ المطلوب دفعها قريباً", "Upcoming Payments Due")
+        AppTab.PAYMENTS -> tr(isArabic, "كل المبالغ اللي اندفعت بالفعل", "Actually Paid Amounts")
+        AppTab.OBLIGATIONS -> tr(isArabic, "التزامات بمواعيد سداد", "Scheduled Payment Dues")
         AppTab.INCOME_DETAILS -> tr(isArabic, "تفاصيل الدخل", "Income Details")
         AppTab.EXPENSE_DETAILS -> tr(isArabic, "تفاصيل المصاريف", "Expenses Details")
+        AppTab.LIFETIME_MONEY -> tr(isArabic, "الفلوس اللي دخلت لك من يوم ما استخدمت البرنامج", "Lifetime Money Added")
+        AppTab.MONEY_FLOW_GUIDE -> tr(isArabic, "المخطط المالي", "Money Flow Plan")
     }
 
     val onSelectBottomTab: (AppTab) -> Unit = remember {
         { tab ->
+            activeDrillDownSpec = null
+            drillDownReturnTabName = null
             if (tab == AppTab.ADD) {
                 addInitialType = TransactionType.EXPENSE
                 addInitialDebt = false
@@ -446,11 +526,12 @@ private fun MainAppShell(
                 onToggleTheme = viewModel::toggleDarkMode,
                 onToggleLanguage = viewModel::toggleLanguage,
                 onProfileClick = {
+                    activeDrillDownSpec = null
                     settingsTargetSectionName = SettingsSection.PERSONAL_INFO.name
                     currentTabName = AppTab.SETTINGS.name
                 },
-                onBackClick = if (isDetailScreen) {
-                    { currentTabName = previousTab.name }
+                onBackClick = if (activeDrillDownSpec != null || isDetailScreen) {
+                    { navigateBackFromDetail() }
                 } else null
             )
         },
@@ -478,28 +559,47 @@ private fun MainAppShell(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            saveableStateHolder.SaveableStateProvider(key = currentTab.route) {
+            val drillSpec = activeDrillDownSpec
+            if (drillSpec != null) {
+                FlowDrillDownScreen(
+                    spec = drillSpec,
+                    transactions = allTransactions,
+                    obligations = allObligations,
+                    settings = settings,
+                    isArabic = isArabic,
+                    onUpdateTransactionReminder = viewModel::updateTransactionReminder,
+                    onBack = closeFlowDrillDown
+                )
+            } else saveableStateHolder.SaveableStateProvider(key = currentTab.route) {
                 when (currentTab) {
                     AppTab.HOME -> HomeTabHost(
                         viewModel = viewModel,
                         settings = settings,
                         isArabic = isArabic,
                         onNavigate = { target ->
-                            if (target == AppTab.SETTINGS) {
-                                settingsTargetSectionName = SettingsSection.PERSONAL_INFO.name
+                            if (target == AppTab.MONEY_FLOW_GUIDE) {
+                                reportsRequestedTabName = ReportsTopTab.PLAN.name
+                                reportsTabNonce += 1
+                                currentTabName = AppTab.REPORTS.name
+                            } else {
+                                if (target == AppTab.SETTINGS) {
+                                    settingsTargetSectionName = SettingsSection.PERSONAL_INFO.name
+                                }
+                                if (target == AppTab.ADD) {
+                                    addInitialType = TransactionType.EXPENSE
+                                    addInitialDebt = false
+                                }
+                                if (target == AppTab.DEBTS || target == AppTab.PAYMENTS ||
+                                    target == AppTab.OBLIGATIONS ||
+                                    target == AppTab.INCOME_DETAILS || target == AppTab.EXPENSE_DETAILS ||
+                                    target == AppTab.LIFETIME_MONEY
+                                ) {
+                                    previousTabName = AppTab.HOME.name
+                                }
+                                if (target == AppTab.DEBTS) debtsInitialTab = "all"
+                                if (target == AppTab.PAYMENTS) paymentsInitialTab = "all"
+                                currentTabName = target.name
                             }
-                            if (target == AppTab.ADD) {
-                                addInitialType = TransactionType.EXPENSE
-                                addInitialDebt = false
-                            }
-                            if (target == AppTab.DEBTS || target == AppTab.PAYMENTS ||
-                                target == AppTab.INCOME_DETAILS || target == AppTab.EXPENSE_DETAILS
-                            ) {
-                                previousTabName = AppTab.HOME.name
-                            }
-                            if (target == AppTab.DEBTS) debtsInitialTab = "all"
-                            if (target == AppTab.PAYMENTS) paymentsInitialTab = "all"
-                            currentTabName = target.name
                         },
                         onOpenDebtsTab = { debtTab ->
                             previousTabName = AppTab.HOME.name
@@ -510,7 +610,11 @@ private fun MainAppShell(
                             previousTabName = AppTab.HOME.name
                             paymentsInitialTab = payTab
                             currentTabName = AppTab.PAYMENTS.name
-                        }
+                        },
+                        onOpenFlowDrillDown = { spec ->
+                            openFlowDrillDown(spec, AppTab.HOME)
+                        },
+                        onRequestNotificationPermission = requestNotificationPermissionIfNeeded
                     )
 
                     AppTab.ADD -> AddTabHost(
@@ -518,7 +622,8 @@ private fun MainAppShell(
                         settings = settings,
                         isArabic = isArabic,
                         initialType = addInitialType,
-                        initialIsDebt = addInitialDebt
+                        initialIsDebt = addInitialDebt,
+                        onRequestNotificationPermission = requestNotificationPermissionIfNeeded
                     )
 
                     AppTab.LOG -> LogTabHost(
@@ -536,6 +641,8 @@ private fun MainAppShell(
                         viewModel = viewModel,
                         settings = settings,
                         isArabic = isArabic,
+                        requestedTopTab = reportsRequestedTab,
+                        requestedTopTabNonce = reportsTabNonce,
                         onViewFullLog = { currentTabName = AppTab.LOG.name },
                         onOpenIncomeDetails = {
                             previousTabName = AppTab.REPORTS.name
@@ -554,6 +661,21 @@ private fun MainAppShell(
                             previousTabName = AppTab.REPORTS.name
                             paymentsInitialTab = "all"
                             currentTabName = AppTab.PAYMENTS.name
+                        },
+                        onOpenLifetimeMoney = {
+                            previousTabName = AppTab.REPORTS.name
+                            currentTabName = AppTab.LIFETIME_MONEY.name
+                        },
+                        onOpenObligations = {
+                            previousTabName = AppTab.REPORTS.name
+                            currentTabName = AppTab.OBLIGATIONS.name
+                        },
+                        onOpenMoneyFlowGuide = {
+                            reportsRequestedTabName = ReportsTopTab.PLAN.name
+                            reportsTabNonce += 1
+                        },
+                        onOpenDrillDown = { spec ->
+                            openFlowDrillDown(spec, AppTab.REPORTS)
                         }
                     )
 
@@ -589,7 +711,12 @@ private fun MainAppShell(
                             previousTabName = AppTab.DEBTS.name
                             paymentsInitialTab = "all"
                             currentTabName = AppTab.PAYMENTS.name
-                        }
+                        },
+                        onOpenObligations = {
+                            previousTabName = AppTab.DEBTS.name
+                            currentTabName = AppTab.OBLIGATIONS.name
+                        },
+                        onRequestNotificationPermission = requestNotificationPermissionIfNeeded
                     )
 
                     AppTab.PAYMENTS -> PaymentsTabHost(
@@ -601,6 +728,13 @@ private fun MainAppShell(
                             debtsInitialTab = "all"
                             currentTabName = AppTab.DEBTS.name
                         }
+                    )
+
+                    AppTab.OBLIGATIONS -> ObligationsTabHost(
+                        viewModel = viewModel,
+                        settings = settings,
+                        isArabic = isArabic,
+                        onRequestNotificationPermission = requestNotificationPermissionIfNeeded
                     )
 
                     AppTab.INCOME_DETAILS -> FlowDetailsTabHost(
@@ -626,19 +760,65 @@ private fun MainAppShell(
                             currentTabName = AppTab.ADD.name
                         }
                     )
+
+                    AppTab.LIFETIME_MONEY -> LifetimeMoneyTabHost(
+                        viewModel = viewModel,
+                        settings = settings,
+                        isArabic = isArabic,
+                        onAddMoneyClick = {
+                            addInitialType = TransactionType.INCOME
+                            addInitialDebt = false
+                            currentTabName = AppTab.ADD.name
+                        }
+                    )
+
+                    AppTab.MONEY_FLOW_GUIDE -> MoneyFlowGuideTabHost(
+                        viewModel = viewModel,
+                        settings = settings,
+                        isArabic = isArabic,
+                        onOpenLifetimeMoney = {
+                            previousTabName = AppTab.MONEY_FLOW_GUIDE.name
+                            currentTabName = AppTab.LIFETIME_MONEY.name
+                        },
+                        onOpenExpenseDetails = {
+                            previousTabName = AppTab.MONEY_FLOW_GUIDE.name
+                            currentTabName = AppTab.EXPENSE_DETAILS.name
+                        },
+                        onOpenObligations = {
+                            previousTabName = AppTab.MONEY_FLOW_GUIDE.name
+                            currentTabName = AppTab.OBLIGATIONS.name
+                        },
+                        onOpenDrillDown = { spec ->
+                            openFlowDrillDown(spec, AppTab.MONEY_FLOW_GUIDE)
+                        }
+                    )
                 }
             }
         }
     }
 
     if (showNotificationsSheet) {
-        NotificationsSheet(
-            settings = settings,
+        NotificationCenterSheet(
             todayCount = alertSummary.todayCount,
             monthExpenseMinor = alertSummary.monthExpenseMinor,
+            settings = settings,
+            transactions = allTransactions,
+            obligations = allObligations,
             isArabic = isArabic,
-            onGoToAdd = { currentTabName = AppTab.ADD.name },
-            onGoToSettingsReminders = {
+            hasUnreadAlerts = alertSummary.hasAlertDot,
+            onMarkAllAsRead = viewModel::markAllNotificationsRead,
+            onToggleNotifications = viewModel::setNotificationsEnabled,
+            onUpdateAlertDefaults = viewModel::updateDefaultAlertPreferences,
+            onUpdateTransactionReminder = viewModel::updateTransactionReminder,
+            onUpdateObligationReminder = viewModel::updateObligationReminder,
+            onRequestNotificationPermission = requestNotificationPermissionIfNeeded,
+            onOpenObligations = {
+                activeDrillDownSpec = null
+                previousTabName = currentTab.name
+                currentTabName = AppTab.OBLIGATIONS.name
+            },
+            onOpenSettings = {
+                activeDrillDownSpec = null
                 settingsTargetSectionName = SettingsSection.NOTIFICATIONS.name
                 currentTabName = AppTab.SETTINGS.name
             },
@@ -733,10 +913,13 @@ private fun HomeTabHost(
     isArabic: Boolean,
     onNavigate: (AppTab) -> Unit,
     onOpenDebtsTab: (String) -> Unit,
-    onOpenPaymentsTab: (String) -> Unit
+    onOpenPaymentsTab: (String) -> Unit,
+    onOpenFlowDrillDown: (FlowDrillDownSpec) -> Unit,
+    onRequestNotificationPermission: () -> Unit
 ) {
     val homeAnalytics by viewModel.homeAnalytics.collectAsStateWithLifecycle()
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val obligations by viewModel.obligations.collectAsStateWithLifecycle()
     val categories by viewModel.categories.collectAsStateWithLifecycle()
     val showWelcomeBanner by viewModel.showWelcomeBanner.collectAsStateWithLifecycle()
 
@@ -744,16 +927,18 @@ private fun HomeTabHost(
         analytics = homeAnalytics,
         transactions = transactions,
         categories = categories,
-        defaultCurrency = settings.defaultCurrency,
-        userName = settings.userName,
-        userAvatarPath = settings.userAvatarPath,
+        settings = settings,
+        pendingObligationsCount = remember(obligations) { obligations.count { !it.isPaid } },
         showWelcomeBanner = showWelcomeBanner,
         isArabic = isArabic,
         onDismissWelcomeBanner = viewModel::dismissWelcomeBanner,
         onNavigate = onNavigate,
         onOpenDebtsTab = onOpenDebtsTab,
         onOpenPaymentsTab = onOpenPaymentsTab,
-        onToggleDebtSettled = viewModel::setDebtSettled
+        onToggleDebtSettled = viewModel::setDebtSettled,
+        onOpenFlowDrillDown = onOpenFlowDrillDown,
+        onAddObligation = viewModel::addObligation,
+        onRequestNotificationPermission = onRequestNotificationPermission
     )
 }
 
@@ -763,7 +948,8 @@ private fun AddTabHost(
     settings: AppSettingsEntity,
     isArabic: Boolean,
     initialType: String,
-    initialIsDebt: Boolean
+    initialIsDebt: Boolean,
+    onRequestNotificationPermission: () -> Unit
 ) {
     val categories by viewModel.categories.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
@@ -774,8 +960,10 @@ private fun AddTabHost(
         defaultCurrency = settings.defaultCurrency,
         lastSelectedSource = settings.lastSelectedSource,
         isArabic = isArabic,
+        settings = settings,
         initialType = initialType,
         initialIsDebt = initialIsDebt,
+        onRequestNotificationPermission = onRequestNotificationPermission,
         onSaveTransaction = viewModel::addTransaction
     )
 }
@@ -813,14 +1001,22 @@ private fun ReportsTabHost(
     viewModel: MizanityViewModel,
     settings: AppSettingsEntity,
     isArabic: Boolean,
+    requestedTopTab: ReportsTopTab,
+    requestedTopTabNonce: Int,
     onViewFullLog: () -> Unit,
     onOpenIncomeDetails: () -> Unit,
     onOpenExpenseDetails: () -> Unit,
     onOpenDebts: () -> Unit,
-    onOpenPayments: () -> Unit
+    onOpenPayments: () -> Unit,
+    onOpenLifetimeMoney: () -> Unit,
+    onOpenObligations: () -> Unit,
+    onOpenMoneyFlowGuide: () -> Unit,
+    onOpenDrillDown: (FlowDrillDownSpec) -> Unit
 ) {
     val reportAnalytics by viewModel.reportAnalytics.collectAsStateWithLifecycle()
     val reportFilter by viewModel.reportFilter.collectAsStateWithLifecycle()
+    val allTransactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val obligations by viewModel.obligations.collectAsStateWithLifecycle()
     val categories by viewModel.categories.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
     val savedFilters by viewModel.savedFilters.collectAsStateWithLifecycle()
@@ -833,6 +1029,10 @@ private fun ReportsTabHost(
         savedFilters = savedFilters,
         settings = settings,
         isArabic = isArabic,
+        allTransactions = allTransactions,
+        obligations = obligations,
+        requestedTopTab = requestedTopTab,
+        requestedTopTabNonce = requestedTopTabNonce,
         onUpdateFilter = viewModel::updateReportFilter,
         onResetFilter = viewModel::resetReportFilter,
         onSaveFilter = viewModel::saveCurrentFilter,
@@ -843,11 +1043,16 @@ private fun ReportsTabHost(
         onExportExcel = viewModel::exportTransactionsExcel,
         onDeleteTransaction = viewModel::deleteTransaction,
         onToggleDebtSettled = viewModel::setDebtSettled,
+        onSetObligationPaid = viewModel::setObligationPaid,
         onViewFullLog = onViewFullLog,
         onOpenIncomeDetails = onOpenIncomeDetails,
         onOpenExpenseDetails = onOpenExpenseDetails,
         onOpenDebts = onOpenDebts,
-        onOpenPayments = onOpenPayments
+        onOpenPayments = onOpenPayments,
+        onOpenLifetimeMoney = onOpenLifetimeMoney,
+        onOpenObligations = onOpenObligations,
+        onOpenMoneyFlowGuide = onOpenMoneyFlowGuide,
+        onOpenDrillDown = onOpenDrillDown
     )
 }
 
@@ -867,22 +1072,44 @@ private fun SettingsTabHost(
     onLaunchRestoreBackupSaf: () -> Unit
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val obligations by viewModel.obligations.collectAsStateWithLifecycle()
     val categories by viewModel.categories.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
 
     SettingsScreen(
         settings = settings,
         transactions = transactions,
+        obligations = obligations,
         categories = categories,
         accounts = accounts,
         initialSection = initialSection,
         isArabic = isArabic,
         signedInEmail = signedInEmail,
         onSetQuickDelete = viewModel::setQuickDeleteMode,
+        onDeleteCurrentWeek = viewModel::deleteCurrentWeekTransactions,
         onDeleteCurrentMonth = viewModel::deleteCurrentMonthTransactions,
         onDeleteOlderThanMonths = viewModel::deleteTransactionsOlderThanMonths,
         onDeleteByCategory = viewModel::deleteTransactionsByCategory,
+        onDeleteBySource = viewModel::deleteTransactionsBySource,
+        onDeleteSingleTransaction = viewModel::deleteTransaction,
+        onDeleteSingleObligation = viewModel::deleteObligation,
         onWipeAll = viewModel::wipeAllTransactions,
+        onResetLifetimeIncome = viewModel::resetLifetimeIncomeNumbers,
+        onResetEarnedIncomeOnly = viewModel::resetEarnedIncomeOnlyNumbers,
+        onResetUnpaidIncomeDebts = viewModel::resetUnpaidIncomeDebtNumbers,
+        onResetSettledIncomeDebts = viewModel::resetSettledIncomeDebtNumbers,
+        onResetExpenses = viewModel::resetExpenseNumbers,
+        onResetPaidExpensesOnly = viewModel::resetPaidExpensesOnlyNumbers,
+        onResetUnpaidExpenseDebts = viewModel::resetUnpaidExpenseDebtNumbers,
+        onResetSettledExpenseDebts = viewModel::resetSettledExpenseDebtNumbers,
+        onResetUnpaidDebts = viewModel::resetUnpaidDebtNumbers,
+        onResetSettledPayments = viewModel::resetSettledPaymentNumbers,
+        onResetObligations = viewModel::resetObligationsNumbers,
+        onResetPendingObligations = viewModel::resetPendingObligationsNumbers,
+        onResetPaidObligations = viewModel::resetPaidObligationsNumbers,
+        onResetMonthlyBudget = viewModel::resetMonthlyBudgetLimit,
+        onResetAllAppNumbers = viewModel::resetAllAppNumbers,
+        onUpdateAnalyticsConfig = viewModel::updateAnalyticsDashboardConfig,
         onSetPinProtection = viewModel::setPinProtection,
         onSetBiometricProtection = viewModel::setBiometricProtection,
         onSetPatternProtection = viewModel::setPatternProtection,
@@ -906,6 +1133,8 @@ private fun SettingsTabHost(
         onLaunchSaveImageSaf = onLaunchSaveImageSaf,
         onLaunchRestoreBackupSaf = onLaunchRestoreBackupSaf,
         onUpdateUserName = viewModel::updateUserName,
+        onUpdateGreetingPreferences = viewModel::updateGreetingPreferences,
+        onSetGreetingVisibility = viewModel::setGreetingVisibility,
         onPickUserAvatar = onPickUserAvatar,
         onRemoveUserAvatar = viewModel::removeUserAvatar,
         onEmitMessage = viewModel::emitToast
@@ -919,9 +1148,12 @@ private fun DebtsTabHost(
     isArabic: Boolean,
     initialDebtTab: String,
     onAddDebtClick: (String) -> Unit,
-    onOpenPayments: () -> Unit
+    onOpenPayments: () -> Unit,
+    onOpenObligations: () -> Unit,
+    onRequestNotificationPermission: () -> Unit
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val obligations by viewModel.obligations.collectAsStateWithLifecycle()
     val categories by viewModel.categories.collectAsStateWithLifecycle()
 
     DebtsScreen(
@@ -929,10 +1161,16 @@ private fun DebtsTabHost(
         categories = categories,
         settings = settings,
         isArabic = isArabic,
+        obligations = obligations,
         initialDebtTab = initialDebtTab,
         onAddDebtClick = onAddDebtClick,
         onOpenPayments = onOpenPayments,
+        onOpenObligations = onOpenObligations,
         onToggleSettled = viewModel::setDebtSettled,
+        onSetObligationPaid = viewModel::setObligationPaid,
+        onUpdateTransactionReminder = viewModel::updateTransactionReminder,
+        onUpdateObligationReminder = viewModel::updateObligationReminder,
+        onRequestNotificationPermission = onRequestNotificationPermission,
         onDeleteTransaction = viewModel::deleteTransaction
     )
 }
@@ -946,6 +1184,7 @@ private fun PaymentsTabHost(
     onOpenDebts: () -> Unit
 ) {
     val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val obligations by viewModel.obligations.collectAsStateWithLifecycle()
     val categories by viewModel.categories.collectAsStateWithLifecycle()
 
     PaymentsScreen(
@@ -953,9 +1192,11 @@ private fun PaymentsTabHost(
         categories = categories,
         settings = settings,
         isArabic = isArabic,
+        obligations = obligations,
         initialTab = initialPaymentTab,
         onOpenDebts = onOpenDebts,
         onReopenAsDebt = { id -> viewModel.setDebtSettled(id, false) },
+        onSetObligationPaid = viewModel::setObligationPaid,
         onDeleteTransaction = viewModel::deleteTransaction
     )
 }
@@ -980,5 +1221,80 @@ private fun FlowDetailsTabHost(
         onAddClick = { onAddClick() },
         onToggleDebtSettled = viewModel::setDebtSettled,
         onDeleteTransaction = viewModel::deleteTransaction
+    )
+}
+
+@Composable
+private fun ObligationsTabHost(
+    viewModel: MizanityViewModel,
+    settings: AppSettingsEntity,
+    isArabic: Boolean,
+    onRequestNotificationPermission: () -> Unit
+) {
+    val obligations by viewModel.obligations.collectAsStateWithLifecycle()
+    val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val accounts by viewModel.accounts.collectAsStateWithLifecycle()
+    val homeAnalytics by viewModel.homeAnalytics.collectAsStateWithLifecycle()
+
+    ObligationsScreen(
+        obligations = obligations,
+        transactions = transactions,
+        accounts = accounts,
+        analytics = homeAnalytics,
+        settings = settings,
+        isArabic = isArabic,
+        onAddObligation = viewModel::addObligation,
+        onSetObligationPaid = viewModel::setObligationPaid,
+        onSetObligationReminderMuted = viewModel::setObligationReminderMuted,
+        onUpdateObligationReminder = viewModel::updateObligationReminder,
+        onUpdateTransactionReminder = viewModel::updateTransactionReminder,
+        onSetTransactionDebtSettled = viewModel::setDebtSettled,
+        onDeleteObligation = viewModel::deleteObligation,
+        onRequestNotificationPermission = onRequestNotificationPermission
+    )
+}
+
+@Composable
+private fun LifetimeMoneyTabHost(
+    viewModel: MizanityViewModel,
+    settings: AppSettingsEntity,
+    isArabic: Boolean,
+    onAddMoneyClick: () -> Unit
+) {
+    val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+
+    LifetimeMoneyScreen(
+        transactions = transactions,
+        settings = settings,
+        isArabic = isArabic,
+        onAddMoneyClick = onAddMoneyClick,
+        onDeleteTransaction = viewModel::deleteTransaction
+    )
+}
+
+@Composable
+private fun MoneyFlowGuideTabHost(
+    viewModel: MizanityViewModel,
+    settings: AppSettingsEntity,
+    isArabic: Boolean,
+    onOpenLifetimeMoney: () -> Unit,
+    onOpenExpenseDetails: () -> Unit,
+    onOpenObligations: () -> Unit,
+    onOpenDrillDown: (FlowDrillDownSpec) -> Unit
+) {
+    val transactions by viewModel.transactions.collectAsStateWithLifecycle()
+    val obligations by viewModel.obligations.collectAsStateWithLifecycle()
+
+    MoneyFlowGuideScreen(
+        transactions = transactions,
+        obligations = obligations,
+        settings = settings,
+        isArabic = isArabic,
+        onOpenLifetimeMoney = onOpenLifetimeMoney,
+        onOpenExpenseDetails = onOpenExpenseDetails,
+        onOpenObligations = onOpenObligations,
+        onSetObligationPaid = viewModel::setObligationPaid,
+        onToggleDebtSettled = viewModel::setDebtSettled,
+        onOpenDrillDown = onOpenDrillDown
     )
 }

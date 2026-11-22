@@ -1,10 +1,14 @@
 package com.example.ui
 
+import com.example.data.ObligationEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionType
 import com.example.util.currentIsoDate
 import com.example.util.currentMonthRange
 import com.example.util.currentWeekRange
+import com.example.util.divideMinorHalfUp
+import com.example.util.percentFloatExact
+import com.example.util.percentHalfUp
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
@@ -39,9 +43,17 @@ object DebtFilter {
     const val PAYMENTS_EXPENSE = "payments_expense" // مدفوعات مديونية المصروفات
 }
 
+object ReminderFilter {
+    const val ALL = "all"
+    const val HAS_REMINDER = "has_reminder" // كل العمليات المربوطة بموعد دفع وإشعار
+    const val ACTIVE = "active" // التنبيه مفعل عليها
+    const val MUTED = "muted" // تم فصل التنبيه عنها
+}
+
 data class ReportFilterState(
     val type: String = "all", // "all", "expense", "income"
     val debtFilter: String = DebtFilter.ALL,
+    val reminderFilter: String = ReminderFilter.ALL,
     val sources: Set<String> = emptySet(), // empty = all
     val currencies: Set<String> = emptySet(), // empty = all
     val categories: Set<String> = emptySet(), // empty = all
@@ -59,6 +71,7 @@ data class ReportFilterState(
     fun hasAnyActiveFilter(): Boolean {
         return type != "all" ||
             debtFilter != DebtFilter.ALL ||
+            reminderFilter != ReminderFilter.ALL ||
             sources.isNotEmpty() ||
             currencies.isNotEmpty() ||
             categories.isNotEmpty() ||
@@ -72,6 +85,7 @@ data class ReportFilterState(
         val obj = JSONObject()
         obj.put("type", type)
         obj.put("debtFilter", debtFilter)
+        obj.put("reminderFilter", reminderFilter)
         obj.put("sources", JSONArray(sources.toList()))
         obj.put("currencies", JSONArray(currencies.toList()))
         obj.put("categories", JSONArray(categories.toList()))
@@ -101,6 +115,7 @@ data class ReportFilterState(
                 ReportFilterState(
                     type = o.optString("type", "all"),
                     debtFilter = o.optString("debtFilter", DebtFilter.ALL),
+                    reminderFilter = o.optString("reminderFilter", ReminderFilter.ALL),
                     sources = readSet("sources"),
                     currencies = readSet("currencies"),
                     categories = readSet("categories"),
@@ -143,7 +158,10 @@ data class SourceBreakdown(
     val expenseMinor: Long,
     val totalVolumeMinor: Long,
     val count: Int,
-    val sharePercent: Float
+    val sharePercent: Float,
+    val cashInMinor: Long = incomeMinor,
+    val cashOutMinor: Long = expenseMinor,
+    val cashBalanceMinor: Long = cashInMinor - cashOutMinor
 )
 
 data class DailyTrendPoint(
@@ -169,6 +187,21 @@ data class WeeklyFlowItem(
     val expenseMinor: Long
 )
 
+/**
+ * Scientific personal & commercial financial summary for a single isolated currency.
+ *
+ * Core Reconciled Identities (strictly checked in [isReconciled]):
+ * 1. Cash Flow Identity:
+ *    [cashBalanceMinor] = [actualCashInMinor] - [actualCashOutMinor]
+ *    where:
+ *      actualCashInMinor  = earnedIncome + unpaidIncomeDebt(loan received) + settledIncomeDebt(loan received)
+ *      actualCashOutMinor = paidExpense + settledExpenseDebt + settledIncomeDebt(loan repaid) + paidObligations
+ * 2. Free Spendable Identity (Available Without Obligations + Pending Obligations == Cash Balance):
+ *    [availableWithoutObligationsMinor] = [cashBalanceMinor] - [totalPendingObligationsMinor]
+ *    [availableWithoutObligationsMinor] + [totalPendingObligationsMinor] == [cashBalanceMinor]
+ * 3. Commercial Operating P&L Identity (excludes loan principal borrowing/repayment):
+ *    [operatingNetProfitMinor] = [earnedIncomeMinor] - [totalIncurredExpensesMinor]
+ */
 data class CurrencySummary(
     val currency: String,
     val totalIncomeMinor: Long,
@@ -194,8 +227,30 @@ data class CurrencySummary(
     val unpaidExpenseDebtCount: Int = 0,
     val settledDebtCount: Int = 0,
     val settledIncomeDebtCount: Int = 0,
-    val settledExpenseDebtCount: Int = 0
-)
+    val settledExpenseDebtCount: Int = 0,
+    // --- Scientific Cash-Flow, Obligations & Commercial P&L Metrics ---
+    val pendingScheduledObligationsMinor: Long = 0L,
+    val pendingScheduledObligationsCount: Int = 0,
+    val paidScheduledObligationsMinor: Long = 0L,
+    val paidScheduledObligationsCount: Int = 0,
+    val totalPendingObligationsMinor: Long = totalUnpaidDebtMinor + pendingScheduledObligationsMinor,
+    val actualCashInMinor: Long = earnedIncomeMinor + unpaidIncomeDebtMinor + settledIncomeDebtMinor,
+    val actualCashOutMinor: Long = paidExpenseMinor + settledExpenseDebtMinor + settledIncomeDebtMinor + paidScheduledObligationsMinor,
+    val cashBalanceMinor: Long = actualCashInMinor - actualCashOutMinor,
+    val availableWithoutObligationsMinor: Long = cashBalanceMinor - totalPendingObligationsMinor,
+    val totalIncurredExpensesMinor: Long = paidExpenseMinor + unpaidExpenseDebtMinor + settledExpenseDebtMinor + paidScheduledObligationsMinor,
+    val operatingNetProfitMinor: Long = earnedIncomeMinor - totalIncurredExpensesMinor,
+    val accountsCashTotalMinor: Long = cashBalanceMinor,
+    val isCashReconciled: Boolean = (availableWithoutObligationsMinor + totalPendingObligationsMinor == cashBalanceMinor),
+    val isProfitReconciled: Boolean = (operatingNetProfitMinor == earnedIncomeMinor - totalIncurredExpensesMinor),
+    val isAccountsReconciled: Boolean = (accountsCashTotalMinor == cashBalanceMinor)
+) {
+    val isFullyReconciled: Boolean
+        get() = isCashReconciled && isProfitReconciled && isAccountsReconciled
+
+    val paidExpenseCount: Int
+        get() = (expenseCount - unpaidExpenseDebtCount - settledExpenseDebtCount).coerceAtLeast(0)
+}
 
 data class ReportAnalytics(
     val filteredTransactions: List<TransactionEntity>,
@@ -207,7 +262,8 @@ data class ReportAnalytics(
     val sourceBreakdown: List<SourceBreakdown>,
     val dailyTrend: List<DailyTrendPoint>,
     val weekdayActivity: List<WeekdayActivity>,
-    val weeklyFlow: List<WeeklyFlowItem>
+    val weeklyFlow: List<WeeklyFlowItem>,
+    val filteredObligations: List<ObligationEntity> = emptyList()
 )
 
 fun applyReportFilter(
@@ -235,6 +291,15 @@ fun applyReportFilter(
             else -> true
         }
         if (!debtMatches) return@filter false
+
+        // 1c. Payment Reminder / Notification Status (AND)
+        val reminderMatches = when (filter.reminderFilter) {
+            ReminderFilter.HAS_REMINDER -> tx.hasPaymentReminder
+            ReminderFilter.ACTIVE -> tx.hasPaymentReminder && !tx.reminderMuted && !tx.isDebtSettled
+            ReminderFilter.MUTED -> tx.hasPaymentReminder && tx.reminderMuted
+            else -> true
+        }
+        if (!reminderMatches) return@filter false
 
         // 2. Sources (AND)
         if (filter.sources.isNotEmpty() && tx.source !in filter.sources) return@filter false
@@ -307,20 +372,100 @@ fun applyReportFilter(
     }
 }
 
+/**
+ * Computes mathematically exact, per-currency isolated personal & commercial accounting analytics
+ * reconciling transactions, debts (credit purchases & borrowed loans), and scheduled obligations.
+ */
 fun computeAnalytics(
     filtered: List<TransactionEntity>,
-    defaultCurrency: String
+    defaultCurrency: String,
+    obligations: List<ObligationEntity> = emptyList()
 ): ReportAnalytics {
-    // Group per currency without conversion (PDF Section 10 rule)
+    // Strictly isolate per currency (never sum different currencies together)
     val byCurrency = filtered.groupBy { it.currency }
+    val obligationsByCurrency = obligations.groupBy { it.currency }
+    val allCurrencies = (byCurrency.keys + obligationsByCurrency.keys).toSet()
     val currenciesOrder = buildList {
-        if (byCurrency.containsKey(defaultCurrency)) add(defaultCurrency)
-        byCurrency.keys.filter { it != defaultCurrency }.sorted().forEach { add(it) }
+        if (defaultCurrency in allCurrencies) add(defaultCurrency)
+        allCurrencies.filter { it != defaultCurrency }.sorted().forEach { add(it) }
         if (isEmpty()) add(defaultCurrency)
     }
 
+    fun computeSourceBreakdownForCurrency(
+        txList: List<TransactionEntity>,
+        obList: List<ObligationEntity>
+    ): List<SourceBreakdown> {
+        data class AccBucket(
+            var incomeMinor: Long = 0L,
+            var expenseMinor: Long = 0L,
+            var cashInMinor: Long = 0L,
+            var cashOutMinor: Long = 0L,
+            var count: Int = 0
+        )
+
+        val map = LinkedHashMap<String, AccBucket>()
+        var totalVol = 0L
+
+        for (tx in txList) {
+            val src = tx.source.ifBlank { "كاش / نقدي" }
+            val bucket = map.getOrPut(src) { AccBucket() }
+            val amt = tx.amountMinor.coerceAtLeast(0L)
+            bucket.count++
+            totalVol += amt
+
+            if (tx.type == TransactionType.INCOME) {
+                bucket.incomeMinor += amt
+                // Both earned income and borrowed loan cash physically enter this account;
+                // once a borrowed loan is repaid (settled), cash also leaves this account (net 0).
+                bucket.cashInMinor += amt
+                if (tx.isDebt && tx.isDebtSettled) {
+                    bucket.cashOutMinor += amt
+                }
+            } else {
+                bucket.expenseMinor += amt
+                // Cash leaves this account ONLY for paid expenses or settled expense debts (NOT unpaid credit!)
+                if (!tx.isDebt || tx.isDebtSettled) {
+                    bucket.cashOutMinor += amt
+                }
+            }
+        }
+
+        for (ob in obList) {
+            if (ob.isPaid) {
+                val src = ob.paidSource.ifBlank { "كاش / نقدي" }
+                val bucket = map.getOrPut(src) { AccBucket() }
+                val amt = ob.amountMinor.coerceAtLeast(0L)
+                bucket.expenseMinor += amt
+                bucket.cashOutMinor += amt
+                bucket.count++
+                totalVol += amt
+            }
+        }
+
+        return map.entries.map { (src, b) ->
+            val vol = b.incomeMinor + b.expenseMinor
+            SourceBreakdown(
+                source = src,
+                incomeMinor = b.incomeMinor,
+                expenseMinor = b.expenseMinor,
+                totalVolumeMinor = vol,
+                count = b.count,
+                sharePercent = percentFloatExact(vol, totalVol),
+                cashInMinor = b.cashInMinor,
+                cashOutMinor = b.cashOutMinor,
+                cashBalanceMinor = b.cashInMinor - b.cashOutMinor
+            )
+        }.sortedByDescending { it.totalVolumeMinor }
+    }
+
+    val sourceBreakdownsByCurrency = HashMap<String, List<SourceBreakdown>>()
+
     val summaries = currenciesOrder.map { curr ->
         val list = byCurrency[curr].orEmpty()
+        val obList = obligationsByCurrency[curr].orEmpty()
+        val sources = computeSourceBreakdownForCurrency(list, obList)
+        sourceBreakdownsByCurrency[curr] = sources
+
         var incSum = 0L
         var incCount = 0
         var expSum = 0L
@@ -344,7 +489,7 @@ fun computeAnalytics(
         val expenseDaysSet = HashSet<String>()
 
         for (tx in list) {
-            val amt = tx.amountMinor
+            val amt = tx.amountMinor.coerceAtLeast(0L)
             totalSum += amt
             activeDaysSet.add(tx.date)
             if (highest == null || amt > highest.amountMinor) highest = tx
@@ -384,21 +529,59 @@ fun computeAnalytics(
             }
         }
 
-        val net = incSum - expSum
-        val savingsRate = if (incSum > 0) {
-            ((net.toDouble() / incSum.toDouble()) * 100.0).toInt().coerceIn(-999, 100)
-        } else 0
-        val avgTx = if (list.isNotEmpty()) totalSum / list.size else 0L
-        val dailyAvgExp = if (expenseDaysSet.isNotEmpty()) expSum / expenseDaysSet.size else 0L
+        // Scheduled Obligations («مبالغ مطلوب دفعها»)
+        var pendingObsMinor = 0L
+        var pendingObsCount = 0
+        var paidObsMinor = 0L
+        var paidObsCount = 0
+        for (ob in obList) {
+            val amt = ob.amountMinor.coerceAtLeast(0L)
+            if (ob.isPaid) {
+                paidObsMinor += amt
+                paidObsCount++
+            } else {
+                pendingObsMinor += amt
+                pendingObsCount++
+            }
+        }
+
+        // --- Scientific Accounting Identities ---
         val totalUnpaidDebt = unpaidExpDebt + unpaidIncDebt
+        val totalPendingObligations = pendingObsMinor + totalUnpaidDebt
+
+        // Actual Cash Basis:
+        // Cash IN  = Earned Revenue + Loan Cash Received (unpaid & settled)
+        // Cash OUT = Paid Regular Expenses + Settled Expense Debts + Repaid Loans + Paid Obligations
+        val actualCashIn = earnedIncome + unpaidIncDebt + settledIncDebt
+        val actualCashOut = paidExpense + settledExpDebt + settledIncDebt + paidObsMinor
+        val cashBalance = actualCashIn - actualCashOut
+
+        // Available Spendable Free of ALL Obligations:
+        // Immediately decreases when an obligation or debt is added, and stays invariant when paid!
+        val availableWithoutObligations = cashBalance - totalPendingObligations
+
+        // Commercial Operating P&L (Accrual):
+        // Excludes loan principal (borrowing & repayment are balance-sheet financing, not profit/loss)
+        val totalIncurredExpenses = paidExpense + unpaidExpDebt + settledExpDebt + paidObsMinor
+        val operatingNetProfit = earnedIncome - totalIncurredExpenses
+
+        // True Savings / Operating Margin against real Earned Income (or fallback to gross income if only debt)
+        val marginBase = if (earnedIncome > 0L) earnedIncome else incSum
+        val savingsRate = if (marginBase > 0L) {
+            percentHalfUp(operatingNetProfit, marginBase, minVal = -999, maxVal = 100)
+        } else 0
+
+        val avgTx = divideMinorHalfUp(totalSum, list.size)
+        val dailyAvgExp = divideMinorHalfUp(expSum, expenseDaysSet.size)
+        val accountsCashSum = sources.sumOf { it.cashBalanceMinor }
 
         CurrencySummary(
             currency = curr,
             totalIncomeMinor = incSum,
             incomeCount = incCount,
-            totalExpenseMinor = expSum,
-            expenseCount = expCount,
-            netMinor = net,
+            totalExpenseMinor = expSum + paidObsMinor,
+            expenseCount = expCount + paidObsCount,
+            netMinor = availableWithoutObligations,
             savingsRatePercent = savingsRate,
             averageTxMinor = avgTx,
             dailyAverageExpenseMinor = dailyAvgExp,
@@ -417,29 +600,45 @@ fun computeAnalytics(
             unpaidExpenseDebtCount = unpaidExpDebtCount,
             settledDebtCount = settledDebtCount,
             settledIncomeDebtCount = settledIncDebtCount,
-            settledExpenseDebtCount = settledExpDebtCount
+            settledExpenseDebtCount = settledExpDebtCount,
+            pendingScheduledObligationsMinor = pendingObsMinor,
+            pendingScheduledObligationsCount = pendingObsCount,
+            paidScheduledObligationsMinor = paidObsMinor,
+            paidScheduledObligationsCount = paidObsCount,
+            totalPendingObligationsMinor = totalPendingObligations,
+            actualCashInMinor = actualCashIn,
+            actualCashOutMinor = actualCashOut,
+            cashBalanceMinor = cashBalance,
+            availableWithoutObligationsMinor = availableWithoutObligations,
+            totalIncurredExpensesMinor = totalIncurredExpenses,
+            operatingNetProfitMinor = operatingNetProfit,
+            accountsCashTotalMinor = accountsCashSum,
+            isCashReconciled = (availableWithoutObligations + totalPendingObligations == cashBalance),
+            isProfitReconciled = (operatingNetProfit == earnedIncome - totalIncurredExpenses),
+            isAccountsReconciled = (accountsCashSum == cashBalance)
         )
     }
 
     val primaryCurrency = currenciesOrder.first()
     val primarySummary = summaries.first()
     val primaryTx = byCurrency[primaryCurrency].orEmpty()
+    val primaryObs = obligationsByCurrency[primaryCurrency].orEmpty()
 
-    // 1. Category breakdown (Expenses & Income separately)
+    // 1. Category breakdown (Expenses & Income separately, exact BigDecimal percentages)
     fun buildCategoryBreakdown(items: List<TransactionEntity>): List<CategoryBreakdown> {
         var total = 0L
-        for (i in items) total += i.amountMinor
+        for (i in items) total += i.amountMinor.coerceAtLeast(0L)
         if (total <= 0L) return emptyList()
         return items
             .groupBy { it.category.ifBlank { "غير محدد" } }
             .map { (cat, list) ->
                 var sum = 0L
-                for (t in list) sum += t.amountMinor
+                for (t in list) sum += t.amountMinor.coerceAtLeast(0L)
                 CategoryBreakdown(
                     category = cat,
                     totalMinor = sum,
                     count = list.size,
-                    percentage = (sum.toFloat() / total.toFloat()) * 100f
+                    percentage = percentFloatExact(sum, total)
                 )
             }
             .sortedByDescending { it.totalMinor }
@@ -447,47 +646,48 @@ fun computeAnalytics(
 
     val primaryExpenses = ArrayList<TransactionEntity>()
     val primaryIncomes = ArrayList<TransactionEntity>()
-    var totalVolume = 0L
     for (tx in primaryTx) {
-        totalVolume += tx.amountMinor
         if (tx.type == TransactionType.EXPENSE) primaryExpenses.add(tx)
         else primaryIncomes.add(tx)
     }
-    val safeTotalVolume = totalVolume.coerceAtLeast(1L)
 
     val expenseBreakdown = buildCategoryBreakdown(primaryExpenses)
     val incomeBreakdown = buildCategoryBreakdown(primaryIncomes)
 
-    // 2. Source / Account breakdown
-    val sourceBreakdown = primaryTx
-        .groupBy { it.source.ifBlank { "كاش / نقدي" } }
-        .map { (src, list) ->
-            var inc = 0L
-            var exp = 0L
-            for (t in list) {
-                if (t.type == TransactionType.INCOME) inc += t.amountMinor else exp += t.amountMinor
-            }
-            val vol = inc + exp
-            SourceBreakdown(
-                source = src,
-                incomeMinor = inc,
-                expenseMinor = exp,
-                totalVolumeMinor = vol,
-                count = list.size,
-                sharePercent = (vol.toFloat() / safeTotalVolume.toFloat()) * 100f
-            )
-        }
-        .sortedByDescending { it.totalVolumeMinor }
+    // 2. Source / Account breakdown (already reconciled with cashBalanceMinor!)
+    val sourceBreakdown = sourceBreakdownsByCurrency[primaryCurrency].orEmpty()
 
-    // 3. Daily Trend (sorted ascending by date, up to latest 14 distinct active days)
-    val sortedByDate = primaryTx.groupBy { it.date }.toSortedMap()
-    var runningNet = 0L
-    val allDailyPoints = sortedByDate.map { (dateIso, list) ->
-        var inc = 0L
-        var exp = 0L
-        for (t in list) {
-            if (t.type == TransactionType.INCOME) inc += t.amountMinor else exp += t.amountMinor
+    // 3. Daily Trend (Reconciled cash flow sorted ascending by date, up to latest 14 distinct active days)
+    val dailyInMap = java.util.TreeMap<String, Long>()
+    val dailyOutMap = java.util.TreeMap<String, Long>()
+    for (tx in primaryTx) {
+        val d = tx.date
+        val amt = tx.amountMinor.coerceAtLeast(0L)
+        if (tx.type == TransactionType.INCOME) {
+            dailyInMap[d] = (dailyInMap[d] ?: 0L) + amt
+            if (tx.isDebt && tx.isDebtSettled) {
+                dailyOutMap[d] = (dailyOutMap[d] ?: 0L) + amt
+            }
+        } else {
+            if (!tx.isDebt || tx.isDebtSettled) {
+                dailyOutMap[d] = (dailyOutMap[d] ?: 0L) + amt
+            } else {
+                // Ensure the date still appears in timeline if only unpaid debt occurred on it
+                dailyOutMap.putIfAbsent(d, 0L)
+            }
         }
+    }
+    for (ob in primaryObs) {
+        if (ob.isPaid) {
+            val d = ob.paidDate.ifBlank { ob.dueDate }
+            dailyOutMap[d] = (dailyOutMap[d] ?: 0L) + ob.amountMinor.coerceAtLeast(0L)
+        }
+    }
+    val allDates = (dailyInMap.keys + dailyOutMap.keys).toSortedSet()
+    var runningNet = 0L
+    val allDailyPoints = allDates.map { dateIso ->
+        val inc = dailyInMap[dateIso] ?: 0L
+        val exp = dailyOutMap[dateIso] ?: 0L
         runningNet += (inc - exp)
         val shortLabel = if (dateIso.length >= 10) "${dateIso.substring(8, 10)}/${dateIso.substring(5, 7)}" else dateIso
         DailyTrendPoint(
@@ -500,7 +700,7 @@ fun computeAnalytics(
     }
     val dailyTrend = if (allDailyPoints.size > 14) allDailyPoints.takeLast(14) else allDailyPoints
 
-    // 4. Weekday Activity (Saturday -> Friday) & Weekly Flow using fast integer calendar math (zero SimpleDateFormat)
+    // 4. Weekday Activity (Saturday -> Friday) & Weekly Flow using fast integer calendar math
     val orderedDays = listOf(
         Triple(Calendar.SATURDAY, "سبت", "Sat"),
         Triple(Calendar.SUNDAY, "أحد", "Sun"),
@@ -535,13 +735,14 @@ fun computeAnalytics(
             else -> 4
         }
 
+        val amt = tx.amountMinor.coerceAtLeast(0L)
         dowCount[dow]++
         if (tx.type == TransactionType.INCOME) {
-            dowIncome[dow] += tx.amountMinor
-            weekIncome[week] += tx.amountMinor
+            dowIncome[dow] += amt
+            weekIncome[week] += amt
         } else {
-            dowExpense[dow] += tx.amountMinor
-            weekExpense[week] += tx.amountMinor
+            dowExpense[dow] += amt
+            weekExpense[week] += amt
         }
     }
 
@@ -575,7 +776,8 @@ fun computeAnalytics(
         sourceBreakdown = sourceBreakdown,
         dailyTrend = dailyTrend,
         weekdayActivity = weekdayActivity,
-        weeklyFlow = weeklyFlow
+        weeklyFlow = weeklyFlow,
+        filteredObligations = obligations
     )
 }
 

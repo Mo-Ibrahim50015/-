@@ -24,7 +24,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountBalance
-import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.Category
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
@@ -59,10 +58,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.AppSettingsEntity
 import com.example.data.CategoryEntity
+import com.example.data.ObligationEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionType
+import com.example.ui.components.CollapsibleFilterDropdownCard
+import com.example.ui.components.DropdownFilterOption
+import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
 import com.example.ui.theme.LocalSereneColors
@@ -74,10 +78,32 @@ import com.example.util.tr
 
 private enum class PaymentGroupMode { FLAT, BY_SOURCE, BY_CATEGORY }
 
+private enum class ActualPaidKind { PAID_EXPENSE, SETTLED_DEBT, PAID_OBLIGATION }
+
+private data class ActualPaidRecord(
+    val key: String,
+    val kind: ActualPaidKind,
+    val title: String,
+    val party: String,
+    val category: String,
+    val source: String,
+    val currency: String,
+    val amountMinor: Long,
+    val date: String,
+    val time: String,
+    val note: String,
+    val sortTimestamp: Long,
+    val tx: TransactionEntity? = null,
+    val obligation: ObligationEntity? = null
+)
+
 /**
- * Dedicated Payments Screen («المدفوعات») displaying all debts that have been paid/settled.
- * Features 3 tabs: All | Settled Income Debts | Settled Expense Debts,
- * plus full multi-field search engine, source/category filters, grouping, and live counters.
+ * Unified «كل المبالغ اللي اندفعت بالفعل» screen.
+ *
+ * Displays EVERY actually paid outflow synced 1:1 with HomeScreen, «المخطط», Reports, and Dashboard:
+ * 1. Direct paid expenses (`type == EXPENSE && !isDebt`)
+ * 2. Settled upcoming expenses & debts (`isDebt && isDebtSettled`)
+ * 3. Paid scheduled obligations (`ob.isPaid`)
  */
 @Composable
 fun PaymentsScreen(
@@ -85,30 +111,103 @@ fun PaymentsScreen(
     categories: List<CategoryEntity>,
     settings: AppSettingsEntity,
     isArabic: Boolean,
-    initialTab: String = "all", // "all", "income", "expense"
+    obligations: List<ObligationEntity> = emptyList(),
+    initialTab: String = "all", // "all", TransactionType.EXPENSE, "settled"
     onOpenDebts: () -> Unit,
     onReopenAsDebt: (id: Long) -> Unit,
+    onSetObligationPaid: (id: Long, paid: Boolean) -> Unit = { _, _ -> },
     onDeleteTransaction: (Long) -> Unit
 ) {
     val ext = LocalSereneColors.current
 
-    val allPayments = remember(transactions) {
-        transactions.filter { it.isDebt && it.isDebtSettled }
+    val allPaidRecords = remember(transactions, obligations, isArabic) {
+        buildList {
+            transactions.forEach { tx ->
+                when {
+                    tx.type == TransactionType.EXPENSE && !tx.isDebt -> {
+                        add(
+                            ActualPaidRecord(
+                                key = "tx_exp_${tx.id}",
+                                kind = ActualPaidKind.PAID_EXPENSE,
+                                title = tx.itemName.ifBlank { tx.note.ifBlank { tx.category } },
+                                party = tx.debtParty,
+                                category = tx.category,
+                                source = tx.source.ifBlank { tr(isArabic, "كاش / نقدي", "Cash") },
+                                currency = tx.currency,
+                                amountMinor = tx.amountMinor,
+                                date = tx.date,
+                                time = tx.time,
+                                note = tx.note,
+                                sortTimestamp = tx.createdAt,
+                                tx = tx
+                            )
+                        )
+                    }
+                    tx.isDebt && tx.isDebtSettled -> {
+                        add(
+                            ActualPaidRecord(
+                                key = "tx_debt_${tx.id}",
+                                kind = ActualPaidKind.SETTLED_DEBT,
+                                title = tx.itemName.ifBlank { tx.note.ifBlank { tx.category } },
+                                party = tx.debtParty,
+                                category = tx.category,
+                                source = tx.source.ifBlank { tr(isArabic, "كاش / نقدي", "Cash") },
+                                currency = tx.currency,
+                                amountMinor = tx.amountMinor,
+                                date = tx.date,
+                                time = tx.time,
+                                note = tx.note,
+                                sortTimestamp = tx.createdAt,
+                                tx = tx
+                            )
+                        )
+                    }
+                }
+            }
+            obligations.filter { it.isPaid }.forEach { ob ->
+                add(
+                    ActualPaidRecord(
+                        key = "ob_paid_${ob.id}",
+                        kind = ActualPaidKind.PAID_OBLIGATION,
+                        title = ob.reason.ifBlank { tr(isArabic, "التزام تم دفعه", "Paid Obligation") },
+                        party = ob.party,
+                        category = tr(isArabic, "التزام مجدول", "Scheduled Obligation"),
+                        source = ob.paidSource.ifBlank { tr(isArabic, "كاش / نقدي", "Cash") },
+                        currency = ob.currency,
+                        amountMinor = ob.amountMinor,
+                        date = ob.paidDate.ifBlank { ob.dueDate },
+                        time = ob.dueTime,
+                        note = ob.note,
+                        sortTimestamp = ob.createdAt,
+                        obligation = ob
+                    )
+                )
+            }
+        }.sortedWith(compareByDescending<ActualPaidRecord> { it.date }.thenByDescending { it.sortTimestamp })
     }
-    val unpaidDebtCountAll = remember(transactions) {
-        transactions.count { it.isDebt && !it.isDebtSettled }
+
+    val upcomingDueCountAll = remember(transactions, obligations) {
+        transactions.count { it.isDebt && !it.isDebtSettled } + obligations.count { !it.isPaid }
     }
 
     var searchQuery by remember { mutableStateOf("") }
-    var typeTab by remember(initialTab) { mutableStateOf(initialTab) }
+    var typeTab by remember(initialTab) {
+        mutableStateOf(
+            when (initialTab) {
+                TransactionType.EXPENSE -> TransactionType.EXPENSE
+                "settled", TransactionType.INCOME -> "settled"
+                else -> "all"
+            }
+        )
+    }
     var selectedSource by remember { mutableStateOf<String?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var groupMode by remember { mutableStateOf(PaymentGroupMode.FLAT) }
     var pendingDeleteTx by remember { mutableStateOf<TransactionEntity?>(null) }
     var pendingReopenTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
-    val availableCurrencies = remember(allPayments, settings.defaultCurrency) {
-        val list = allPayments.map { it.currency }.distinct().sorted()
+    val availableCurrencies = remember(allPaidRecords, settings.defaultCurrency) {
+        val list = allPaidRecords.map { it.currency }.distinct().sorted()
         if (list.isEmpty()) listOf(settings.defaultCurrency)
         else if (settings.defaultCurrency in list) listOf(settings.defaultCurrency) + list.filter { it != settings.defaultCurrency }
         else list
@@ -117,19 +216,19 @@ fun PaymentsScreen(
     val validCurrency = if (activeCurrency in availableCurrencies) activeCurrency else availableCurrencies.first()
     val sym = currencySymbol(validCurrency, isArabic)
 
-    val currencyPayments = remember(allPayments, validCurrency) {
-        allPayments.filter { it.currency == validCurrency }
+    val currencyPayments = remember(allPaidRecords, validCurrency) {
+        allPaidRecords.filter { it.currency == validCurrency }
     }
-    val incomePayments = remember(currencyPayments) {
-        currencyPayments.filter { it.type == TransactionType.INCOME }
+    val directExpenses = remember(currencyPayments) {
+        currencyPayments.filter { it.kind == ActualPaidKind.PAID_EXPENSE }
     }
-    val expensePayments = remember(currencyPayments) {
-        currencyPayments.filter { it.type == TransactionType.EXPENSE }
+    val settledObligationsAndDebts = remember(currencyPayments) {
+        currencyPayments.filter { it.kind != ActualPaidKind.PAID_EXPENSE }
     }
 
     val totalPaidMinor = remember(currencyPayments) { currencyPayments.sumOf { it.amountMinor } }
-    val incomePaidMinor = remember(incomePayments) { incomePayments.sumOf { it.amountMinor } }
-    val expensePaidMinor = remember(expensePayments) { expensePayments.sumOf { it.amountMinor } }
+    val directExpensePaidMinor = remember(directExpenses) { directExpenses.sumOf { it.amountMinor } }
+    val settledPaidMinor = remember(settledObligationsAndDebts) { settledObligationsAndDebts.sumOf { it.amountMinor } }
 
     val availableSources = remember(currencyPayments) {
         currencyPayments.map { it.source }.distinct().sorted()
@@ -146,13 +245,18 @@ fun PaymentsScreen(
         selectedCategory
     ) {
         val q = searchQuery.trim().lowercase()
-        currencyPayments.filter { tx ->
-            if (typeTab != "all" && tx.type != typeTab) return@filter false
-            if (selectedSource != null && tx.source != selectedSource) return@filter false
-            if (selectedCategory != null && tx.category != selectedCategory) return@filter false
+        currencyPayments.filter { rec ->
+            val matchesTab = when (typeTab) {
+                TransactionType.EXPENSE -> rec.kind == ActualPaidKind.PAID_EXPENSE
+                "settled" -> rec.kind != ActualPaidKind.PAID_EXPENSE
+                else -> true
+            }
+            if (!matchesTab) return@filter false
+            if (selectedSource != null && rec.source != selectedSource) return@filter false
+            if (selectedCategory != null && rec.category != selectedCategory) return@filter false
             if (q.isNotEmpty()) {
-                val amtStr = formatAmountMinor(tx.amountMinor, false)
-                val hay = "${tx.itemName} ${tx.debtParty} ${tx.category} ${tx.source} ${tx.note} ${tx.date} $amtStr".lowercase()
+                val amtStr = formatAmountMinor(rec.amountMinor, false)
+                val hay = "${rec.title} ${rec.party} ${rec.category} ${rec.source} ${rec.note} ${rec.date} $amtStr".lowercase()
                 if (!hay.contains(q)) return@filter false
             }
             true
@@ -169,7 +273,7 @@ fun PaymentsScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. Hero Total Payments Summary Card
+            // 1. Hero Total Actually Paid Card
             item {
                 Surface(
                     modifier = Modifier
@@ -211,7 +315,7 @@ fun PaymentsScreen(
                                 }
                                 Column {
                                     Text(
-                                        text = tr(isArabic, "إجمالي المدفوعات المسددة", "Total Settled Payments"),
+                                        text = tr(isArabic, "كل المبالغ اللي اندفعت بالفعل", "All Actually Paid Amounts"),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = ext.heroCardSubtext,
                                         maxLines = 1,
@@ -220,8 +324,8 @@ fun PaymentsScreen(
                                     Text(
                                         text = tr(
                                             isArabic,
-                                            "${currencyPayments.size} عملية مدفوعة • $unpaidDebtCountAll مديونية قائمة",
-                                            "${currencyPayments.size} paid • $unpaidDebtCountAll unpaid debts"
+                                            "${currencyPayments.size} عملية مدفوعة فعلياً • $upcomingDueCountAll لسه هتندفع",
+                                            "${currencyPayments.size} actually paid • $upcomingDueCountAll upcoming"
                                         ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = Color(0xFF82F5C1),
@@ -251,7 +355,7 @@ fun PaymentsScreen(
                                         modifier = Modifier.size(15.dp)
                                     )
                                     Text(
-                                        text = tr(isArabic, "المديونيات ($unpaidDebtCountAll)", "Debts ($unpaidDebtCountAll)"),
+                                        text = tr(isArabic, "القادم ($upcomingDueCountAll)", "Due ($upcomingDueCountAll)"),
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                         color = Color.White,
                                         maxLines = 1
@@ -314,14 +418,14 @@ fun PaymentsScreen(
                 }
             }
 
-            // 2. Three Dedicated Payment Tabs (All | Income Debts Paid | Expense Debts Paid)
+            // 2. Three Dedicated Tabs: All | Direct Paid Expenses | Settled Obligations & Debts
             item {
                 SereneCard(contentPadding = PaddingValues(10.dp)) {
                     Text(
                         text = tr(
                             isArabic,
-                            "تبويبات المدفوعات (المديونيات التي تم سدادها):",
-                            "Payment Categories (Settled Debts):"
+                            "تصنيف المبالغ اللي اندفعت بالفعل:",
+                            "Filter Actually Paid Amounts:"
                         ),
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -333,7 +437,7 @@ fun PaymentsScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         PaymentTabCard(
-                            modifier = Modifier.weight(0.9f),
+                            modifier = Modifier.weight(0.85f),
                             title = tr(isArabic, "الكل", "All"),
                             subtitle = "${currencyPayments.size} • ${formatAmountMinor(totalPaidMinor, false)}",
                             accent = ext.incomeColor,
@@ -343,195 +447,168 @@ fun PaymentsScreen(
                         )
                         PaymentTabCard(
                             modifier = Modifier.weight(1.1f),
-                            title = tr(isArabic, "مديونية إيرادات", "Income Debts"),
-                            subtitle = "${incomePayments.size} • ${formatAmountMinor(incomePaidMinor, false)} $sym",
-                            accent = ext.warningAmber,
-                            selected = typeTab == TransactionType.INCOME,
-                            tag = "payments_tab_income",
-                            onClick = { typeTab = TransactionType.INCOME }
-                        )
-                        PaymentTabCard(
-                            modifier = Modifier.weight(1.1f),
-                            title = tr(isArabic, "مديونية مصروفات", "Expense Debts"),
-                            subtitle = "${expensePayments.size} • ${formatAmountMinor(expensePaidMinor, false)} $sym",
-                            accent = MaterialTheme.colorScheme.primary,
+                            title = tr(isArabic, "مصروفات مدفوعة", "Paid Expenses"),
+                            subtitle = "${directExpenses.size} • ${formatAmountMinor(directExpensePaidMinor, false)} $sym",
+                            accent = ext.expenseColor,
                             selected = typeTab == TransactionType.EXPENSE,
                             tag = "payments_tab_expense",
                             onClick = { typeTab = TransactionType.EXPENSE }
+                        )
+                        PaymentTabCard(
+                            modifier = Modifier.weight(1.15f),
+                            title = tr(isArabic, "التزامات مسددة", "Settled Dues"),
+                            subtitle = "${settledObligationsAndDebts.size} • ${formatAmountMinor(settledPaidMinor, false)} $sym",
+                            accent = MaterialTheme.colorScheme.primary,
+                            selected = typeTab == "settled",
+                            tag = "payments_tab_settled",
+                            onClick = { typeTab = "settled" }
                         )
                     }
                 }
             }
 
-            // 3. Comprehensive Search Engine + Filters Card
+            // 3. Compact Collapsible Dropdown Filters & Formatted Export
             item {
-                SereneCard(contentPadding = PaddingValues(14.dp)) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        singleLine = true,
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.Search,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Close,
-                                    contentDescription = tr(isArabic, "مسح البحث", "Clear"),
-                                    modifier = Modifier
-                                        .clip(CircleShape)
-                                        .clickable { searchQuery = "" }
-                                        .padding(4.dp)
-                                )
-                            }
-                        },
-                        placeholder = {
-                            Text(
-                                text = tr(
-                                    isArabic,
-                                    "ابحث باسم المنتج، الحاجة، الدائن، التصنيف، المصدر، أو المبلغ...",
-                                    "Search product/item, creditor, category, source, amount..."
-                                ),
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = ext.cardSubtleBackground,
-                            unfocusedContainerColor = ext.cardSubtleBackground,
-                            unfocusedBorderColor = Color.Transparent,
-                            focusedBorderColor = ext.incomeColor
+                val activeFilterCount = listOf(
+                    searchQuery.isNotBlank(),
+                    selectedSource != null,
+                    selectedCategory != null,
+                    groupMode != PaymentGroupMode.FLAT
+                ).count { it }
+                val sourceOptions = remember(availableSources, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الحسابات", "All Accounts"))) +
+                        availableSources.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val categoryOptions = remember(availableCategories, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل التصنيفات", "All Categories"))) +
+                        availableCategories.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val groupOptions = remember(isArabic) {
+                    listOf(
+                        DropdownFilterOption(PaymentGroupMode.FLAT, tr(isArabic, "قائمة عادية", "Flat List")),
+                        DropdownFilterOption(PaymentGroupMode.BY_SOURCE, tr(isArabic, "حسب الحساب", "By Account")),
+                        DropdownFilterOption(PaymentGroupMode.BY_CATEGORY, tr(isArabic, "حسب التصنيف", "By Category"))
+                    )
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExportDownloadButton(
+                        transactions = filteredPayments.mapNotNull { it.tx },
+                        obligations = filteredPayments.mapNotNull { it.obligation },
+                        preferredCurrency = validCurrency,
+                        reportTitle = tr(isArabic, "كل المبالغ اللي اندفعت بالفعل", "All Actually Paid Amounts"),
+                        filterSummary = tr(
+                            isArabic,
+                            "${filteredPayments.size} عملية مدفوعة • ${formatAmountMinor(filteredTotalMinor)} $sym",
+                            "${filteredPayments.size} paid entries • ${formatAmountMinor(filteredTotalMinor)} $sym"
                         ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("payments_search_input")
+                        isArabic = isArabic,
+                        testTag = "payments_export_btn",
+                        modifier = Modifier.fillMaxWidth()
                     )
 
-                    if (availableSources.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = tr(isArabic, "المصدر:", "Source:"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            PaymentPill(
-                                label = tr(isArabic, "الكل", "All"),
-                                selected = selectedSource == null,
-                                onClick = { selectedSource = null }
-                            )
-                            availableSources.forEach { src ->
-                                PaymentPill(
-                                    label = src,
-                                    selected = selectedSource == src,
-                                    onClick = { selectedSource = if (selectedSource == src) null else src }
-                                )
+                    CollapsibleFilterDropdownCard(
+                        isArabic = isArabic,
+                        activeFilterCount = activeFilterCount,
+                        onResetFilters = if (hasActiveFilters || groupMode != PaymentGroupMode.FLAT) {
+                            {
+                                searchQuery = ""
+                                typeTab = "all"
+                                selectedSource = null
+                                selectedCategory = null
+                                groupMode = PaymentGroupMode.FLAT
                             }
-                        }
-                    }
-
-                    if (availableCategories.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = tr(isArabic, "التصنيف:", "Category:"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            PaymentPill(
-                                label = tr(isArabic, "الكل", "All"),
-                                selected = selectedCategory == null,
-                                onClick = { selectedCategory = null }
-                            )
-                            availableCategories.forEach { cat ->
-                                PaymentPill(
-                                    label = cat,
-                                    selected = selectedCategory == cat,
-                                    onClick = { selectedCategory = if (selectedCategory == cat) null else cat }
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        } else null,
+                        title = tr(isArabic, "بحث وفلاتر المدفوعات", "Payments Search & Filters"),
+                        testTagPrefix = "payments_filters"
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = tr(isArabic, "تنظيم:", "Group:"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            PaymentPill(
-                                label = tr(isArabic, "قائمة", "List"),
-                                selected = groupMode == PaymentGroupMode.FLAT,
-                                onClick = { groupMode = PaymentGroupMode.FLAT }
-                            )
-                            PaymentPill(
-                                label = tr(isArabic, "حسب المصدر", "By Source"),
-                                selected = groupMode == PaymentGroupMode.BY_SOURCE,
-                                onClick = { groupMode = PaymentGroupMode.BY_SOURCE }
-                            )
-                            PaymentPill(
-                                label = tr(isArabic, "حسب التصنيف", "By Category"),
-                                selected = groupMode == PaymentGroupMode.BY_CATEGORY,
-                                onClick = { groupMode = PaymentGroupMode.BY_CATEGORY }
-                            )
-                        }
-                        if (hasActiveFilters) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        searchQuery = ""
-                                        typeTab = "all"
-                                        selectedSource = null
-                                        selectedCategory = null
-                                    }
-                                    .padding(horizontal = 6.dp, vertical = 4.dp)
-                            ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            leadingIcon = {
                                 Icon(
-                                    imageVector = Icons.Outlined.Refresh,
+                                    imageVector = Icons.Outlined.Search,
                                     contentDescription = null,
-                                    tint = ext.expenseColor,
-                                    modifier = Modifier.size(14.dp)
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Spacer(modifier = Modifier.width(3.dp))
+                            },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Close,
+                                        contentDescription = tr(isArabic, "مسح البحث", "Clear"),
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .clickable { searchQuery = "" }
+                                            .padding(4.dp)
+                                    )
+                                }
+                            },
+                            placeholder = {
                                 Text(
-                                    text = tr(isArabic, "ضبط", "Reset"),
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = ext.expenseColor
+                                    text = tr(
+                                        isArabic,
+                                        "ابحث اندفعت لمين، عشان إيه، التصنيف، الحساب، أو المبلغ...",
+                                        "Search recipient, reason, category, account, amount..."
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = ext.cardSubtleBackground,
+                                unfocusedContainerColor = ext.cardSubtleBackground,
+                                unfocusedBorderColor = Color.Transparent,
+                                focusedBorderColor = ext.incomeColor
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("payments_search_input")
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (availableSources.isNotEmpty()) {
+                                SmartSingleSelectDropdown(
+                                    label = tr(isArabic, "الحساب", "Account"),
+                                    selectedValue = selectedSource,
+                                    options = sourceOptions,
+                                    isArabic = isArabic,
+                                    onSelected = { selectedSource = it },
+                                    isHighlighted = selectedSource != null,
+                                    testTag = "payments_source_dropdown",
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (availableCategories.isNotEmpty()) {
+                                SmartSingleSelectDropdown(
+                                    label = tr(isArabic, "التصنيف", "Category"),
+                                    selectedValue = selectedCategory,
+                                    options = categoryOptions,
+                                    isArabic = isArabic,
+                                    onSelected = { selectedCategory = it },
+                                    isHighlighted = selectedCategory != null,
+                                    testTag = "payments_category_dropdown",
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
                         }
+
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "طريقة العرض والتنظيم", "Grouping Mode"),
+                            selectedValue = groupMode,
+                            options = groupOptions,
+                            isArabic = isArabic,
+                            onSelected = { groupMode = it },
+                            isHighlighted = groupMode != PaymentGroupMode.FLAT,
+                            testTag = "payments_group_dropdown",
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             }
@@ -548,8 +625,8 @@ fun PaymentsScreen(
                     Text(
                         text = tr(
                             isArabic,
-                            "المدفوعات المطابقة (${filteredPayments.size})",
-                            "Matching Payments (${filteredPayments.size})"
+                            "المدفوع فعلياً (${filteredPayments.size})",
+                            "Actually Paid (${filteredPayments.size})"
                         ),
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.primary
@@ -557,7 +634,7 @@ fun PaymentsScreen(
                     Text(
                         text = "${tr(isArabic, "الإجمالي:", "Total:")} ${formatAmountMinor(filteredTotalMinor)} $sym",
                         style = AmountBodyStyle.copy(fontWeight = FontWeight.Bold),
-                        color = ext.incomeColor
+                        color = ext.expenseColor
                     )
                 }
             }
@@ -586,10 +663,10 @@ fun PaymentsScreen(
                                 )
                             }
                             Text(
-                                text = if (allPayments.isEmpty()) {
-                                    tr(isArabic, "لا توجد مدفوعات مسددة حتى الآن", "No settled payments yet")
+                                text = if (allPaidRecords.isEmpty()) {
+                                    tr(isArabic, "لا توجد مبالغ اندفعت بالفعل حتى الآن", "No paid amounts recorded yet")
                                 } else {
-                                    tr(isArabic, "لا توجد مدفوعات مطابقة للبحث أو الفلتر", "No payments match your search/filter")
+                                    tr(isArabic, "لا توجد نتائج مطابقة للبحث أو الفلتر", "No records match your search/filter")
                                 },
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -598,8 +675,8 @@ fun PaymentsScreen(
                             Text(
                                 text = tr(
                                     isArabic,
-                                    "أي مديونية تضغط فيها على زر «دفع» ستنتقل تلقائياً هنا وتُضاف لإجمالي المدفوعات.",
-                                    "Any debt you tap \"Pay\" on automatically moves here and adds to total payments."
+                                    "أي مصروف تسجله كـ «اندفعت بالفعل» أو أي مبلغ مطلوب تضغط عليه «تم الدفع» يظهر هنا فوراً.",
+                                    "Any expense logged as Paid or any upcoming item you mark Paid appears here immediately."
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -615,7 +692,7 @@ fun PaymentsScreen(
                             ) {
                                 Icon(Icons.Outlined.RequestQuote, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(tr(isArabic, "استعراض المديونيات القائمة", "View Active Debts"))
+                                Text(tr(isArabic, "عرض المبالغ المطلوب دفعها قريباً", "View Upcoming Payments"))
                             }
                         }
                     }
@@ -623,14 +700,21 @@ fun PaymentsScreen(
             } else {
                 when (groupMode) {
                     PaymentGroupMode.FLAT -> {
-                        items(filteredPayments.size, key = { filteredPayments[it].id }) { idx ->
-                            val tx = filteredPayments[idx]
-                            PaymentDetailCard(
-                                tx = tx,
+                        items(filteredPayments.size, key = { filteredPayments[it].key }) { idx ->
+                            val rec = filteredPayments[idx]
+                            ActualPaidRecordCard(
+                                record = rec,
                                 categories = categories,
                                 isArabic = isArabic,
-                                onReopenClick = { pendingReopenTx = tx },
-                                onDeleteClick = { pendingDeleteTx = tx }
+                                onReopenClick = {
+                                    when {
+                                        rec.tx != null && rec.tx.isDebt -> pendingReopenTx = rec.tx
+                                        rec.obligation != null -> onSetObligationPaid(rec.obligation.id, false)
+                                    }
+                                },
+                                onDeleteClick = {
+                                    rec.tx?.let { pendingDeleteTx = it }
+                                }
                             )
                         }
                     }
@@ -676,19 +760,26 @@ fun PaymentsScreen(
                                         Text(
                                             text = "${formatAmountMinor(groupTotal)} $sym",
                                             style = AmountBodyStyle.copy(fontWeight = FontWeight.Bold),
-                                            color = ext.incomeColor
+                                            color = ext.expenseColor
                                         )
                                     }
                                 }
                             }
-                            items(items.size, key = { items[it].id }) { idx ->
-                                val tx = items[idx]
-                                PaymentDetailCard(
-                                    tx = tx,
+                            items(items.size, key = { items[it].key }) { idx ->
+                                val rec = items[idx]
+                                ActualPaidRecordCard(
+                                    record = rec,
                                     categories = categories,
                                     isArabic = isArabic,
-                                    onReopenClick = { pendingReopenTx = tx },
-                                    onDeleteClick = { pendingDeleteTx = tx }
+                                    onReopenClick = {
+                                        when {
+                                            rec.tx != null && rec.tx.isDebt -> pendingReopenTx = rec.tx
+                                            rec.obligation != null -> onSetObligationPaid(rec.obligation.id, false)
+                                        }
+                                    },
+                                    onDeleteClick = {
+                                        rec.tx?.let { pendingDeleteTx = it }
+                                    }
                                 )
                             }
                         }
@@ -700,13 +791,13 @@ fun PaymentsScreen(
 
     pendingReopenTx?.let { tx ->
         SecurityVerificationDialog(
-            title = tr(isArabic, "إرجاع للمديونيات القائمة", "Reopen as Active Debt"),
+            title = tr(isArabic, "إرجاع للمبالغ المطلوب دفعها قريباً", "Move Back to Upcoming Due"),
             description = tr(
                 isArabic,
-                "هل تريد إرجاع \"${tx.itemName.ifBlank { tx.category }}\" إلى المديونيات القائمة مرة أخرى؟",
-                "Move \"${tx.itemName.ifBlank { tx.category }}\" back to active unpaid debts?"
+                "هل تريد إرجاع \"${tx.itemName.ifBlank { tx.category }}\" إلى «كل المبالغ المطلوب دفعها قريباً»؟",
+                "Move \"${tx.itemName.ifBlank { tx.category }}\" back to Upcoming Payments Due?"
             ),
-            confirmLabel = tr(isArabic, "إرجاع للمديونيات", "Reopen"),
+            confirmLabel = tr(isArabic, "إرجاع للقادم", "Move Back"),
             isDanger = false,
             requireSecurity = settings.confirmPaymentWithSecurity,
             settings = settings,
@@ -724,8 +815,8 @@ fun PaymentsScreen(
             title = tr(isArabic, "حذف عملية مدفوعة", "Delete Paid Record"),
             description = tr(
                 isArabic,
-                "هل تريد حذف \"${tx.itemName.ifBlank { tx.category }}\" نهائياً من المدفوعات والتقارير؟",
-                "Delete \"${tx.itemName.ifBlank { tx.category }}\" permanently from payments and reports?"
+                "هل تريد حذف \"${tx.itemName.ifBlank { tx.category }}\" نهائياً من قاعدة البيانات والتقارير؟",
+                "Delete \"${tx.itemName.ifBlank { tx.category }}\" permanently from records and reports?"
             ),
             confirmLabel = tr(isArabic, "حذف نهائي", "Delete"),
             isDanger = true,
@@ -821,28 +912,32 @@ private fun PaymentPill(
 }
 
 @Composable
-private fun PaymentDetailCard(
-    tx: TransactionEntity,
+private fun ActualPaidRecordCard(
+    record: ActualPaidRecord,
     categories: List<CategoryEntity>,
     isArabic: Boolean,
     onReopenClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
     val ext = LocalSereneColors.current
-    val isIncomeDebt = tx.type == TransactionType.INCOME
-    val sym = currencySymbol(tx.currency, isArabic)
-    val iconKey = categories.firstOrNull { it.name == tx.category }?.iconKey
-        ?: if (isIncomeDebt) "payments" else "category"
-    val itemTitle = tx.itemName.ifBlank { tx.note.ifBlank { tx.category } }
-    val typeLabel = if (isIncomeDebt) {
-        tr(isArabic, "سداد مديونية إيرادات", "Settled Income Debt")
-    } else {
-        tr(isArabic, "سداد مديونية مصروفات", "Settled Expense Debt")
+    val sym = currencySymbol(record.currency, isArabic)
+    val iconKey = categories.firstOrNull { it.name == record.category }?.iconKey ?: "payments"
+    val kindLabel = when (record.kind) {
+        ActualPaidKind.PAID_EXPENSE -> tr(isArabic, "مصروف اندفع بالفعل", "Paid Expense")
+        ActualPaidKind.SETTLED_DEBT -> tr(isArabic, "مبلغ قادم تم دفعه", "Settled Due")
+        ActualPaidKind.PAID_OBLIGATION -> tr(isArabic, "التزام مجدول تم دفعه", "Paid Obligation")
     }
+    val kindColor = when (record.kind) {
+        ActualPaidKind.PAID_EXPENSE -> ext.expenseColor
+        ActualPaidKind.SETTLED_DEBT -> ext.incomeColor
+        ActualPaidKind.PAID_OBLIGATION -> MaterialTheme.colorScheme.primary
+    }
+    val canReopen = (record.tx != null && record.tx.isDebt) || record.obligation != null
+    val canDelete = record.tx != null
 
     SereneCard(
-        modifier = Modifier.testTag("payment_card_${tx.id}"),
-        borderColor = ext.incomeColor.copy(alpha = 0.4f),
+        modifier = Modifier.testTag("payment_card_${record.key}"),
+        borderColor = kindColor.copy(alpha = 0.35f),
         contentPadding = PaddingValues(14.dp)
     ) {
         Row(
@@ -854,13 +949,13 @@ private fun PaymentDetailCard(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(ext.incomeContainer),
+                    .background(kindColor.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Outlined.CheckCircle,
-                    contentDescription = tx.category,
-                    tint = ext.incomeColor,
+                    contentDescription = record.category,
+                    tint = kindColor,
                     modifier = Modifier.size(21.dp)
                 )
             }
@@ -870,7 +965,7 @@ private fun PaymentDetailCard(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = itemTitle,
+                    text = record.title,
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 2,
@@ -884,13 +979,13 @@ private fun PaymentDetailCard(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .background(ext.incomeContainer)
+                            .background(kindColor.copy(alpha = 0.14f))
                             .padding(horizontal = 7.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = typeLabel,
+                            text = kindLabel,
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = ext.incomeColor,
+                            color = kindColor,
                             maxLines = 1
                         )
                     }
@@ -901,7 +996,7 @@ private fun PaymentDetailCard(
                             .padding(horizontal = 7.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = tx.category,
+                            text = record.category,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -925,13 +1020,13 @@ private fun PaymentDetailCard(
                             modifier = Modifier.size(13.dp)
                         )
                         Text(
-                            text = tx.source,
+                            text = record.source,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
                         )
                     }
-                    if (tx.debtParty.isNotBlank()) {
+                    if (record.party.isNotBlank()) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(3.dp)
@@ -939,11 +1034,11 @@ private fun PaymentDetailCard(
                             Icon(
                                 imageVector = Icons.Outlined.Person,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(13.dp)
                             )
                             Text(
-                                text = tx.debtParty,
+                                text = tr(isArabic, "اندفعت لمين: ${record.party}", "To: ${record.party}"),
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
@@ -954,7 +1049,7 @@ private fun PaymentDetailCard(
                 }
 
                 Text(
-                    text = formatDisplayDateTime(tx.date, tx.time, isArabic),
+                    text = formatDisplayDateTime(record.date, record.time, isArabic),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline
                 )
@@ -962,9 +1057,9 @@ private fun PaymentDetailCard(
 
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = "${formatAmountMinor(tx.amountMinor)} $sym",
+                    text = "-${formatAmountMinor(record.amountMinor)} $sym",
                     style = AmountBodyStyle.copy(fontWeight = FontWeight.Bold),
-                    color = ext.incomeColor,
+                    color = ext.expenseColor,
                     maxLines = 1,
                     softWrap = false
                 )
@@ -977,10 +1072,10 @@ private fun PaymentDetailCard(
             }
         }
 
-        if (tx.note.isNotBlank() && tx.note != itemTitle) {
+        if (record.note.isNotBlank() && record.note != record.title) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = tx.note,
+                text = record.note,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
@@ -988,53 +1083,61 @@ private fun PaymentDetailCard(
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .testTag("reopen_payment_${tx.id}")
-                    .clickable(onClick = onReopenClick),
-                shape = RoundedCornerShape(10.dp),
-                color = ext.cardSubtleBackground
+        if (canReopen || canDelete) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Undo,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = tr(isArabic, "إرجاع للمديونيات", "Move to Debts"),
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                if (canReopen) {
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .testTag("reopen_payment_${record.key}")
+                            .clickable(onClick = onReopenClick),
+                        shape = RoundedCornerShape(10.dp),
+                        color = ext.cardSubtleBackground
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Undo,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = tr(isArabic, "إرجاع للقادم", "Move to Upcoming"),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
                 }
-            }
 
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(ext.cardSubtleBackground)
-                    .clickable(onClick = onDeleteClick),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Delete,
-                    contentDescription = tr(isArabic, "حذف", "Delete"),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
+                if (canDelete) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(ext.cardSubtleBackground)
+                            .clickable(onClick = onDeleteClick),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Delete,
+                            contentDescription = tr(isArabic, "حذف", "Delete"),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
         }
     }

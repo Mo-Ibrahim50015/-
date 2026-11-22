@@ -58,8 +58,12 @@ import com.example.data.CategoryEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionType
 import com.example.ui.DatePreset
+import com.example.ui.components.CollapsibleFilterDropdownCard
+import com.example.ui.components.DropdownFilterOption
+import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.components.TransactionRowItem
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
@@ -298,13 +302,13 @@ fun FlowDetailsScreen(
                         ) {
                             DetailHeroPill(
                                 modifier = Modifier.weight(1f),
-                                label = if (isIncome) tr(isArabic, "دخل مكتسب", "Earned") else tr(isArabic, "مدفوع فعلياً", "Paid"),
+                                label = if (isIncome) tr(isArabic, "فلوس ملكك", "Your Own Money") else tr(isArabic, "اندفعت خلاص", "Already Paid"),
                                 value = "${formatAmountMinor(regularMinor, false)} $sym",
                                 valueColor = Color(0xFF82F5C1)
                             )
                             DetailHeroPill(
                                 modifier = Modifier.weight(1f),
-                                label = if (isIncome) tr(isArabic, "مديونية إيراد", "Borrowed") else tr(isArabic, "مديونية مصروف", "Unpaid Debt"),
+                                label = if (isIncome) tr(isArabic, "فلوس مطلوب سدادها قريباً", "To Be Repaid Soon") else tr(isArabic, "مندفعتش لسه", "Not Paid Yet"),
                                 value = "${formatAmountMinor(unpaidDebtMinor, false)} $sym",
                                 valueColor = if (unpaidDebtMinor > 0L) Color(0xFFFBBF24) else ext.heroCardSubtext
                             )
@@ -319,114 +323,151 @@ fun FlowDetailsScreen(
                 }
             }
 
-            // 2. Search & Quick Filters Card
+            // 2. Formatted Export & Collapsible Dropdown Filters
             item {
-                SereneCard(contentPadding = PaddingValues(12.dp)) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("flow_detail_search_input"),
-                        placeholder = {
-                            Text(
-                                text = tr(isArabic, "ابحث بالتصنيف، المصدر، اسم الحاجة، أو المبلغ...", "Search category, account, item, amount..."),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(20.dp))
-                        },
-                        trailingIcon = if (searchQuery.isNotEmpty()) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Outlined.Close,
-                                    contentDescription = tr(isArabic, "مسح البحث", "Clear"),
-                                    modifier = Modifier
-                                        .size(18.dp)
-                                        .clickable { searchQuery = "" }
-                                )
-                            }
-                        } else null,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = ext.cardSubtleBackground,
-                            unfocusedContainerColor = ext.cardSubtleBackground
+                val activeFilterCount = listOf(
+                    searchQuery.isNotBlank(),
+                    natureFilter != FlowNatureFilter.ALL,
+                    datePreset != DatePreset.ALL,
+                    selectedCategory != null
+                ).count { it }
+                val natureOptions = remember(isIncome, isArabic) {
+                    listOf(
+                        DropdownFilterOption(FlowNatureFilter.ALL, tr(isArabic, "الكل", "All")),
+                        DropdownFilterOption(
+                            FlowNatureFilter.REGULAR_ONLY,
+                            if (isIncome) tr(isArabic, "فلوس ملكك", "Your Own Money")
+                            else tr(isArabic, "اندفعت خلاص", "Already Paid")
+                        ),
+                        DropdownFilterOption(
+                            FlowNatureFilter.UNPAID_DEBT,
+                            if (isIncome) tr(isArabic, "فلوس متسددتش لسه", "Not Repaid Yet")
+                            else tr(isArabic, "مندفعتش لسه", "Not Paid Yet")
+                        ),
+                        DropdownFilterOption(
+                            FlowNatureFilter.SETTLED_DEBT,
+                            tr(isArabic, "فلوس اندفعت خلاص", "Already Paid")
                         )
                     )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Nature filter pills
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        val natureTabs = listOf(
-                            FlowNatureFilter.ALL to tr(isArabic, "الكل", "All"),
-                            FlowNatureFilter.REGULAR_ONLY to if (isIncome) {
-                                tr(isArabic, "مكتسب فقط", "Earned Only")
-                            } else {
-                                tr(isArabic, "مدفوع فقط", "Paid Only")
-                            },
-                            FlowNatureFilter.UNPAID_DEBT to tr(isArabic, "مديونيات قائمة", "Unpaid Debts"),
-                            FlowNatureFilter.SETTLED_DEBT to tr(isArabic, "مديونيات مسددة", "Settled")
-                        )
-                        natureTabs.forEach { (key, label) ->
-                            val active = natureFilter == key
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .clickable { natureFilter = key },
-                                shape = RoundedCornerShape(999.dp),
-                                color = if (active) ext.heroCardBackground else ext.cardSubtleBackground,
-                                border = if (active) null else BorderStroke(1.dp, ext.cardBorder.copy(alpha = 0.6f))
-                            ) {
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = if (active) ext.heroCardOnBackground else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                                    maxLines = 1
-                                )
-                            }
-                        }
+                }
+                val dateOptions = remember(isArabic) {
+                    DatePreset.entries.filter { it != DatePreset.CUSTOM }.map { preset ->
+                        DropdownFilterOption(preset, if (isArabic) preset.labelAr else preset.labelEn)
                     }
+                }
+                val availableFlowCategories = remember(baseTypedList) {
+                    baseTypedList.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+                }
+                val categoryOptions = remember(availableFlowCategories, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل التصنيفات", "All Categories"))) +
+                        availableFlowCategories.map { DropdownFilterOption<String?>(it, it) }
+                }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExportDownloadButton(
+                        transactions = filteredList,
+                        preferredCurrency = settings.defaultCurrency,
+                        reportTitle = if (isIncome) {
+                            tr(isArabic, "تفاصيل إجمالي الدخل", "Total Income Details")
+                        } else {
+                            tr(isArabic, "تفاصيل إجمالي المصاريف", "Total Expenses Details")
+                        },
+                        filterSummary = tr(
+                            isArabic,
+                            "${filteredList.size} عملية مطابقة • ${formatAmountMinor(totalMinor)} $sym",
+                            "${filteredList.size} matching entries • ${formatAmountMinor(totalMinor)} $sym"
+                        ),
+                        isArabic = isArabic,
+                        testTag = "flow_details_export_btn",
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
-                    // Date preset pills
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        DatePreset.entries.filter { it != DatePreset.CUSTOM }.forEach { preset ->
-                            val active = datePreset == preset
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .clickable { datePreset = preset },
-                                shape = RoundedCornerShape(999.dp),
-                                color = if (active) accentBg else ext.cardSubtleBackground,
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (active) accentColor.copy(alpha = 0.45f) else ext.cardBorder.copy(alpha = 0.5f)
-                                )
-                            ) {
-                                Text(
-                                    text = if (isArabic) preset.labelAr else preset.labelEn,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = if (active) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                                    maxLines = 1
-                                )
+                    CollapsibleFilterDropdownCard(
+                        isArabic = isArabic,
+                        activeFilterCount = activeFilterCount,
+                        onResetFilters = if (activeFilterCount > 0) {
+                            {
+                                searchQuery = ""
+                                natureFilter = FlowNatureFilter.ALL
+                                datePreset = DatePreset.ALL
+                                selectedCategory = null
                             }
+                        } else null,
+                        title = tr(isArabic, "بحث وفلاتر التفاصيل", "Search & Filters"),
+                        testTagPrefix = "flow_detail_filters"
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("flow_detail_search_input"),
+                            placeholder = {
+                                Text(
+                                    text = tr(isArabic, "ابحث بالتصنيف، المصدر، اسم الحاجة، أو المبلغ...", "Search category, account, item, amount..."),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(20.dp))
+                            },
+                            trailingIcon = if (searchQuery.isNotEmpty()) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Close,
+                                        contentDescription = tr(isArabic, "مسح البحث", "Clear"),
+                                        modifier = Modifier
+                                            .size(18.dp)
+                                            .clickable { searchQuery = "" }
+                                    )
+                                }
+                            } else null,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = ext.cardSubtleBackground,
+                                unfocusedContainerColor = ext.cardSubtleBackground
+                            )
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "الحالة", "Nature"),
+                                selectedValue = natureFilter,
+                                options = natureOptions,
+                                isArabic = isArabic,
+                                onSelected = { natureFilter = it },
+                                isHighlighted = natureFilter != FlowNatureFilter.ALL,
+                                testTag = "flow_detail_nature_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "الفترة", "Period"),
+                                selectedValue = datePreset,
+                                options = dateOptions,
+                                isArabic = isArabic,
+                                onSelected = { datePreset = it },
+                                isHighlighted = datePreset != DatePreset.ALL,
+                                testTag = "flow_detail_date_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        if (availableFlowCategories.isNotEmpty()) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "التصنيف", "Category"),
+                                selectedValue = selectedCategory,
+                                options = categoryOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedCategory = it },
+                                isHighlighted = selectedCategory != null,
+                                testTag = "flow_detail_category_dropdown",
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
                 }

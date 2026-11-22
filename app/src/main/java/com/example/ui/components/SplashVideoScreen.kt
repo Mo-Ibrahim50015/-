@@ -53,13 +53,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.R
 import com.example.util.tr
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val SPLASH_MAX_DURATION_MS = 4000L
 
 /**
- * Full-screen responsive vertical/portrait splash video filling any phone screen edge-to-edge
- * with CENTER_CROP scaling, hardware-accelerated TextureView, and strict 4-second ceiling.
+ * Full-screen high-clarity splash video screen.
+ * Preserves native aspect ratio and razor-sharp pixel quality (no aggressive 3x-4x zoom cropping)
+ * inside a seamless full-screen deep-emerald cinema backdrop with gentle edge vignette.
  */
 @Composable
 fun SplashVideoScreen(
@@ -98,8 +103,14 @@ fun SplashVideoScreen(
     val playerHolder = remember { arrayOfNulls<MediaPlayer>(1) }
     val surfaceHolder = remember { arrayOfNulls<Surface>(1) }
     val videoSizeHolder = remember { intArrayOf(0, 0) }
+    val isDisposed = remember { AtomicBoolean(false) }
+    val isPrepared = remember { AtomicBoolean(false) }
 
-    fun applyCenterCropTransform(tv: TextureView, viewW: Int, viewH: Int) {
+    /**
+     * Sharp aspect-ratio-preserving scaling: fills full width cleanly without distorting
+     * or over-magnifying pixels (zoom strictly capped at 1.0x native fit so quality stays crystal clear).
+     */
+    fun applySharpFitTransform(tv: TextureView, viewW: Int, viewH: Int) {
         val vw = videoSizeHolder[0]
         val vh = videoSizeHolder[1]
         if (vw <= 0 || vh <= 0 || viewW <= 0 || viewH <= 0) return
@@ -108,73 +119,116 @@ fun SplashVideoScreen(
         val scaleX: Float
         val scaleY: Float
         if (videoRatio > viewRatio) {
-            // Video is wider than portrait screen -> scale X so height fills 100% edge-to-edge
-            scaleX = videoRatio / viewRatio
-            scaleY = 1f
-        } else {
-            // Video is taller than screen -> scale Y so width fills 100% edge-to-edge
             scaleX = 1f
             scaleY = viewRatio / videoRatio
+        } else {
+            scaleX = videoRatio / viewRatio
+            scaleY = 1f
         }
-        val matrix = Matrix().apply {
-            setScale(scaleX, scaleY, viewW / 2f, viewH / 2f)
+        runCatching {
+            val matrix = Matrix().apply {
+                setScale(scaleX, scaleY, viewW / 2f, viewH / 2f)
+            }
+            tv.setTransform(matrix)
         }
-        tv.setTransform(matrix)
     }
 
+    /**
+     * Detaches references immediately on UI thread and performs blocking MediaPlayer.release()
+     * on Dispatchers.IO so the main thread NEVER stalls or ANRs during splash exit.
+     */
     fun releasePlayerResources() {
-        playerHolder[0]?.let { mp ->
-            runCatching { if (mp.isPlaying) mp.stop() }
-            runCatching { mp.reset() }
-            runCatching { mp.release() }
+        val wasPrepared = isPrepared.getAndSet(false)
+        val mp = synchronized(playerHolder) {
+            val current = playerHolder[0]
+            playerHolder[0] = null
+            current
         }
-        playerHolder[0] = null
-        surfaceHolder[0]?.let { s -> runCatching { s.release() } }
-        surfaceHolder[0] = null
+        val surface = synchronized(surfaceHolder) {
+            val current = surfaceHolder[0]
+            surfaceHolder[0] = null
+            current
+        }
+        if (mp != null || surface != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                if (mp != null) {
+                    runCatching { mp.setOnPreparedListener(null) }
+                    runCatching { mp.setOnCompletionListener(null) }
+                    runCatching { mp.setOnErrorListener(null) }
+                    runCatching { mp.setOnVideoSizeChangedListener(null) }
+                    if (wasPrepared) {
+                        runCatching { if (mp.isPlaying) mp.stop() }
+                    }
+                    runCatching { mp.setSurface(null) }
+                    runCatching { mp.release() }
+                }
+                if (surface != null) {
+                    runCatching { surface.release() }
+                }
+            }
+        }
     }
 
     DisposableEffect(Unit) {
         onDispose {
+            isDisposed.set(true)
             releasePlayerResources()
         }
     }
 
+    val backdropColor = Color(0xFF041522)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF041522))
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFF03101B), backdropColor, Color(0xFF062030))
+                )
+            )
     ) {
-        // Full-Screen Portrait Edge-to-Edge Video Surface
+        // Large Full-Width Crisp Video Surface (native resolution preserved without blurry upscaling)
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 TextureView(ctx).apply {
-                    isOpaque = true
+                    isOpaque = false
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(
                             st: SurfaceTexture,
                             width: Int,
                             height: Int
                         ) {
+                            if (isDisposed.get() || finishedOnce) return
                             releasePlayerResources()
-                            val surface = Surface(st)
-                            surfaceHolder[0] = surface
+                            val surface = runCatching { Surface(st) }.getOrNull() ?: return
+                            synchronized(surfaceHolder) { surfaceHolder[0] = surface }
                             try {
-                                val afd = context.resources.openRawResourceFd(R.raw.splash_intro)
                                 val mp = MediaPlayer()
-                                playerHolder[0] = mp
+                                isPrepared.set(false)
+                                synchronized(playerHolder) { playerHolder[0] = mp }
+                                // setDataSource MUST be called first so native mPlayer leaves IDLE state (state 1)
+                                context.resources.openRawResourceFd(R.raw.splash_intro).use { afd ->
+                                    mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                                }
                                 mp.setSurface(surface)
-                                mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                                afd.close()
                                 mp.isLooping = false
                                 mp.setOnVideoSizeChangedListener { _, vw, vh ->
-                                    videoSizeHolder[0] = vw
-                                    videoSizeHolder[1] = vh
-                                    applyCenterCropTransform(this@apply, this@apply.width, this@apply.height)
+                                    if (!isDisposed.get()) {
+                                        videoSizeHolder[0] = vw
+                                        videoSizeHolder[1] = vh
+                                        applySharpFitTransform(this@apply, this@apply.width, this@apply.height)
+                                    }
                                 }
                                 mp.setOnPreparedListener { player ->
-                                    if (!finishedOnce) {
-                                        player.start()
+                                    val stillActive = !isDisposed.get() && !finishedOnce &&
+                                        synchronized(playerHolder) { playerHolder[0] === player }
+                                    if (stillActive) {
+                                        isPrepared.set(true)
+                                        runCatching {
+                                            player.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                                        }
+                                        runCatching { player.start() }
                                     }
                                 }
                                 mp.setOnCompletionListener {
@@ -182,12 +236,14 @@ fun SplashVideoScreen(
                                     finishSafely()
                                 }
                                 mp.setOnErrorListener { _, _, _ ->
+                                    isPrepared.set(false)
                                     releasePlayerResources()
                                     finishSafely()
                                     true
                                 }
                                 mp.prepareAsync()
-                            } catch (_: Exception) {
+                            } catch (_: Throwable) {
+                                isPrepared.set(false)
                                 releasePlayerResources()
                                 finishSafely()
                             }
@@ -198,7 +254,9 @@ fun SplashVideoScreen(
                             width: Int,
                             height: Int
                         ) {
-                            applyCenterCropTransform(this@apply, width, height)
+                            if (!isDisposed.get()) {
+                                applySharpFitTransform(this@apply, width, height)
+                            }
                         }
 
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
@@ -216,22 +274,22 @@ fun SplashVideoScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(120.dp)
+                .height(110.dp)
                 .align(Alignment.TopCenter)
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent)
+                        colors = listOf(Color(0xFF03101B).copy(alpha = 0.72f), Color.Transparent)
                     )
                 )
         )
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(140.dp)
+                .height(130.dp)
                 .align(Alignment.BottomCenter)
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.58f))
+                        colors = listOf(Color.Transparent, Color(0xFF03101B).copy(alpha = 0.82f))
                     )
                 )
         )
@@ -250,7 +308,7 @@ fun SplashVideoScreen(
                     finishSafely()
                 },
             shape = RoundedCornerShape(999.dp),
-            color = Color.Black.copy(alpha = 0.36f)
+            color = Color.Black.copy(alpha = 0.42f)
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),

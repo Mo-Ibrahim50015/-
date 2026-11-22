@@ -35,6 +35,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RequestQuote
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.TaskAlt
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Undo
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -61,16 +62,25 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.AppSettingsEntity
 import com.example.data.CategoryEntity
+import com.example.data.ObligationEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionType
+import com.example.ui.components.CollapsibleFilterDropdownCard
+import com.example.ui.components.DropdownFilterOption
+import com.example.ui.components.ExportDownloadButton
+import com.example.ui.components.ItemReminderConfig
+import com.example.ui.components.ReminderSettingsDialog
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
 import com.example.ui.theme.LocalSereneColors
 import com.example.util.currencySymbol
+import com.example.util.currentIsoDate
 import com.example.util.formatAmountMinor
 import com.example.util.formatDisplayDateTime
+import com.example.util.formatTime12Hour
 import com.example.util.iconForKey
 import com.example.util.tr
 
@@ -83,10 +93,16 @@ fun DebtsScreen(
     categories: List<CategoryEntity>,
     settings: AppSettingsEntity,
     isArabic: Boolean,
+    obligations: List<ObligationEntity> = emptyList(),
     initialDebtTab: String = "all",
     onAddDebtClick: (initialType: String) -> Unit,
     onOpenPayments: () -> Unit,
+    onOpenObligations: () -> Unit = {},
     onToggleSettled: (id: Long, settled: Boolean) -> Unit,
+    onSetObligationPaid: (id: Long, paid: Boolean) -> Unit = { _, _ -> },
+    onUpdateTransactionReminder: (Long, ItemReminderConfig) -> Unit = { _, _ -> },
+    onUpdateObligationReminder: (Long, ItemReminderConfig) -> Unit = { _, _ -> },
+    onRequestNotificationPermission: () -> Unit = {},
     onDeleteTransaction: (Long) -> Unit
 ) {
     val ext = LocalSereneColors.current
@@ -101,9 +117,11 @@ fun DebtsScreen(
     var groupMode by remember { mutableStateOf(DebtGroupMode.FLAT) }
     var pendingDeleteTx by remember { mutableStateOf<TransactionEntity?>(null) }
     var pendingPayTx by remember { mutableStateOf<TransactionEntity?>(null) }
+    var reminderEditTx by remember { mutableStateOf<TransactionEntity?>(null) }
+    var reminderEditObligation by remember { mutableStateOf<ObligationEntity?>(null) }
 
-    val availableCurrencies = remember(allDebts, settings.defaultCurrency) {
-        val list = allDebts.map { it.currency }.distinct().sorted()
+    val availableCurrencies = remember(allDebts, obligations, settings.defaultCurrency) {
+        val list = (allDebts.map { it.currency } + obligations.map { it.currency }).distinct().sorted()
         if (list.isEmpty()) listOf(settings.defaultCurrency)
         else if (settings.defaultCurrency in list) listOf(settings.defaultCurrency) + list.filter { it != settings.defaultCurrency }
         else list
@@ -116,6 +134,21 @@ fun DebtsScreen(
 
     val currencyDebts = remember(allDebts, validCurrency) {
         allDebts.filter { it.currency == validCurrency }
+    }
+    val currencyObligations = remember(obligations, validCurrency) {
+        obligations.filter { it.currency == validCurrency }
+    }
+    val pendingObligations = remember(currencyObligations) {
+        currencyObligations.filter { !it.isPaid }
+    }
+    val paidObligations = remember(currencyObligations) {
+        currencyObligations.filter { it.isPaid }
+    }
+    val pendingObligationsMinor = remember(pendingObligations) {
+        pendingObligations.sumOf { it.amountMinor }
+    }
+    val paidObligationsMinor = remember(paidObligations) {
+        paidObligations.sumOf { it.amountMinor }
     }
     val availableSources = remember(currencyDebts) {
         currencyDebts.map { it.source }.distinct().sorted()
@@ -152,18 +185,39 @@ fun DebtsScreen(
         }
     }
 
-    // Live totals computed on filtered or currency scope
+    val filteredPendingObligations = remember(pendingObligations, searchQuery, statusFilter) {
+        if (statusFilter == DebtStatusFilter.SETTLED) emptyList()
+        else {
+            val q = searchQuery.trim().lowercase()
+            pendingObligations.filter { ob ->
+                if (q.isEmpty()) true
+                else {
+                    val amtStr = formatAmountMinor(ob.amountMinor, false)
+                    "${ob.reason} ${ob.party} ${ob.note} ${ob.dueDate} $amtStr".lowercase().contains(q)
+                }
+            }
+        }
+    }
+
+    // Live unified totals synced with HomeScreen, Plan, Reports & Dashboard
     val unpaidList = remember(currencyDebts) { currencyDebts.filter { !it.isDebtSettled } }
     val settledList = remember(currencyDebts) { currencyDebts.filter { it.isDebtSettled } }
-    val totalUnpaidMinor = remember(unpaidList) { unpaidList.sumOf { it.amountMinor } }
+    val totalUnpaidDebtMinor = remember(unpaidList) { unpaidList.sumOf { it.amountMinor } }
+    val totalUnpaidMinor = totalUnpaidDebtMinor + pendingObligationsMinor
     val unpaidExpenseDebtMinor = remember(unpaidList) {
         unpaidList.filter { it.type == TransactionType.EXPENSE }.sumOf { it.amountMinor }
     }
     val unpaidIncomeDebtMinor = remember(unpaidList) {
         unpaidList.filter { it.type == TransactionType.INCOME }.sumOf { it.amountMinor }
     }
-    val totalSettledMinor = remember(settledList) { settledList.sumOf { it.amountMinor } }
-    val filteredTotalMinor = remember(filteredDebts) { filteredDebts.sumOf { it.amountMinor } }
+    val totalSettledMinor = remember(settledList, paidObligationsMinor) {
+        settledList.sumOf { it.amountMinor } + paidObligationsMinor
+    }
+    val filteredTotalMinor = remember(filteredDebts, filteredPendingObligations) {
+        filteredDebts.sumOf { it.amountMinor } + filteredPendingObligations.sumOf { it.amountMinor }
+    }
+    val totalPendingCount = unpaidList.size + pendingObligations.size
+    val totalSettledCount = settledList.size + paidObligations.size
 
     val hasActiveFilters = searchQuery.isNotBlank() ||
         statusFilter != DebtStatusFilter.UNPAID ||
@@ -220,15 +274,15 @@ fun DebtsScreen(
                                 }
                                 Column {
                                     Text(
-                                        text = tr(isArabic, "إجمالي الديون القائمة عليّ", "Total Active Debts Owed"),
+                                        text = tr(isArabic, "كل المبالغ المطلوب دفعها قريباً", "All Upcoming Payments Due"),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = ext.heroCardSubtext
                                     )
                                     Text(
                                         text = tr(
                                             isArabic,
-                                            "${unpaidList.size} دين قائم • ${settledList.size} مسدد",
-                                            "${unpaidList.size} unpaid • ${settledList.size} settled"
+                                            "$totalPendingCount مبلغ لسه هيندفع • $totalSettledCount تم دفعه",
+                                            "$totalPendingCount upcoming • $totalSettledCount paid"
                                         ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = ext.heroCardSubtext.copy(alpha = 0.85f)
@@ -240,12 +294,7 @@ fun DebtsScreen(
                                     .clip(RoundedCornerShape(10.dp))
                                     .testTag("debts_add_new_btn")
                                     .clickable {
-                                        val presetType = if (typeFilter == TransactionType.INCOME) {
-                                            TransactionType.INCOME
-                                        } else {
-                                            TransactionType.EXPENSE
-                                        }
-                                        onAddDebtClick(presetType)
+                                        onAddDebtClick(TransactionType.EXPENSE)
                                     },
                                 shape = RoundedCornerShape(10.dp),
                                 color = ext.incomeColor
@@ -262,7 +311,7 @@ fun DebtsScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        text = tr(isArabic, "إضافة دين", "Add Debt"),
+                                        text = tr(isArabic, "إضافة مبلغ", "Add Due"),
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                         color = Color.White
                                     )
@@ -287,7 +336,7 @@ fun DebtsScreen(
                             )
                         }
 
-                        // Clear Repayment Obligation Notice
+                        // Clear Repayment Notice
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp),
@@ -296,8 +345,8 @@ fun DebtsScreen(
                             Text(
                                 text = tr(
                                     isArabic,
-                                    "سواء مديونية إيرادات دخلت لحسابك أو مديونية مصروفات — في كل الحالات التزامات عليك سدادها",
-                                    "Whether borrowed cash into your account or expense debts — all are obligations to repay"
+                                    "يجمع كل مصاريفك اللي لسه هتندفع قريباً وكل الالتزامات المجدولة — وأي مبلغ تدفعه يتخصم فوراً من محفظتك",
+                                    "Unifies all upcoming unpaid expenses & scheduled obligations — paying any item deducts immediately from your wallet"
                                 ),
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = Color.White.copy(alpha = 0.92f),
@@ -305,7 +354,7 @@ fun DebtsScreen(
                             )
                         }
 
-                        // Breakdown Split: Borrowed Income Debts vs Expense Debts vs Settled
+                        // Breakdown Split: Upcoming Expenses vs Scheduled Obligations vs Paid
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -314,19 +363,19 @@ fun DebtsScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .clickable { typeFilter = TransactionType.INCOME },
-                                label = tr(isArabic, "مديونية إيرادات", "Income Debts"),
-                                value = "${formatAmountMinor(unpaidIncomeDebtMinor, false)} $sym",
-                                accent = ext.warningAmber
+                                    .clickable { typeFilter = TransactionType.EXPENSE },
+                                label = tr(isArabic, "مصاريف لسه هتندفع", "Upcoming Exp."),
+                                value = "${formatAmountMinor(unpaidExpenseDebtMinor + unpaidIncomeDebtMinor, false)} $sym",
+                                accent = ext.chartRose
                             )
                             DebtHeroMetricChip(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .clickable { typeFilter = TransactionType.EXPENSE },
-                                label = tr(isArabic, "مديونية مصروفات", "Expense Debts"),
-                                value = "${formatAmountMinor(unpaidExpenseDebtMinor, false)} $sym",
-                                accent = ext.chartRose
+                                    .clickable { onOpenObligations() },
+                                label = tr(isArabic, "التزامات بمواعيد", "Scheduled Dues"),
+                                value = "${formatAmountMinor(pendingObligationsMinor, false)} $sym",
+                                accent = ext.warningAmber
                             )
                             DebtHeroMetricChip(
                                 modifier = Modifier
@@ -334,7 +383,7 @@ fun DebtsScreen(
                                     .clip(RoundedCornerShape(12.dp))
                                     .testTag("debts_open_payments_chip")
                                     .clickable { onOpenPayments() },
-                                label = tr(isArabic, "المدفوعات (${settledList.size})", "Payments (${settledList.size})"),
+                                label = tr(isArabic, "اندفعت بالفعل", "Actually Paid"),
                                 value = "${formatAmountMinor(totalSettledMinor, false)} $sym",
                                 accent = Color(0xFF34D399)
                             )
@@ -375,7 +424,145 @@ fun DebtsScreen(
                 }
             }
 
-            // 1b. Dedicated Debt Category Tabs (All / Borrowed Income into Account / Expense Debts)
+            // 1b. Scheduled Obligations Due Soon Section (synced directly with ObligationsScreen)
+            if (filteredPendingObligations.isNotEmpty()) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = tr(
+                                isArabic,
+                                "التزامات بمواعيد سداد (${filteredPendingObligations.size})",
+                                "Scheduled Payment Dues (${filteredPendingObligations.size})"
+                            ),
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = ext.warningAmber
+                        )
+                        Text(
+                            text = tr(isArabic, "إدارة المواعيد ←", "Manage →"),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(onClick = onOpenObligations)
+                                .padding(horizontal = 6.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                items(filteredPendingObligations.size, key = { "sched_ob_${filteredPendingObligations[it].id}" }) { idx ->
+                    val ob = filteredPendingObligations[idx]
+                    val obSym = currencySymbol(ob.currency, isArabic)
+                    SereneCard(
+                        modifier = Modifier.testTag("upcoming_obligation_card_${ob.id}"),
+                        borderColor = ext.warningAmber.copy(alpha = 0.45f),
+                        contentPadding = PaddingValues(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(
+                                    text = ob.reason.ifBlank { tr(isArabic, "مبلغ مطلوب دفعه", "Scheduled Payment") },
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (ob.party.isNotBlank()) {
+                                    Text(
+                                        text = tr(isArabic, "هتندفع لمين: ${ob.party}", "To: ${ob.party}"),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Text(
+                                    text = buildString {
+                                        append(tr(isArabic, "الموعد: ${ob.dueDate}", "Due: ${ob.dueDate}"))
+                                        if (ob.dueTime.isNotBlank()) append(" • ${formatTime12Hour(ob.dueTime, isArabic)}")
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "${formatAmountMinor(ob.amountMinor)} $obSym",
+                                style = AmountBodyStyle.copy(fontWeight = FontWeight.Bold),
+                                color = ext.expenseColor
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .testTag("pay_obligation_${ob.id}")
+                                    .clickable { onSetObligationPaid(ob.id, true) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = ext.incomeColor
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Payments,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = tr(isArabic, "تم الدفع", "Mark Paid"),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                            Surface(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .testTag("debt_ob_reminder_btn_${ob.id}")
+                                    .clickable { reminderEditObligation = ob },
+                                shape = RoundedCornerShape(10.dp),
+                                color = ext.cardSubtleBackground,
+                                border = BorderStroke(1.dp, ext.cardBorder)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Tune,
+                                        contentDescription = tr(isArabic, "إعدادات التنبيه", "Alert settings"),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        text = tr(isArabic, "إعدادات التنبيه", "Alert"),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1c. Dedicated Category Tabs (All / Upcoming Expenses / Borrowed)
             item {
                 val unpaidIncomeCount = remember(unpaidList) {
                     unpaidList.count { it.type == TransactionType.INCOME }
@@ -387,8 +574,8 @@ fun DebtsScreen(
                     Text(
                         text = tr(
                             isArabic,
-                            "تصنيف المديونية (كلها مستحقة السداد):",
-                            "Debt Type Tabs (All To Be Repaid):"
+                            "تصنيف المبالغ اللي لسه هتندفع:",
+                            "Filter Upcoming Items:"
                         ),
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -402,37 +589,61 @@ fun DebtsScreen(
                         DebtTypeTabCard(
                             modifier = Modifier.weight(0.85f),
                             title = tr(isArabic, "الكل", "All"),
-                            subtitle = "${unpaidList.size} • ${formatAmountMinor(totalUnpaidMinor, false)}",
+                            subtitle = "${unpaidList.size} • ${formatAmountMinor(totalUnpaidDebtMinor, false)}",
                             accent = MaterialTheme.colorScheme.primary,
                             selected = typeFilter == "all",
                             tag = "debt_tab_all",
                             onClick = { typeFilter = "all" }
                         )
                         DebtTypeTabCard(
-                            modifier = Modifier.weight(1.2f),
-                            title = tr(isArabic, "مديونية إيرادات دخلت لحسابي", "Income Entered Account"),
-                            subtitle = "$unpaidIncomeCount • ${formatAmountMinor(unpaidIncomeDebtMinor, false)} $sym",
-                            accent = ext.warningAmber,
-                            selected = typeFilter == TransactionType.INCOME,
-                            tag = "debt_tab_income",
-                            onClick = { typeFilter = TransactionType.INCOME }
-                        )
-                        DebtTypeTabCard(
-                            modifier = Modifier.weight(1.05f),
-                            title = tr(isArabic, "مديونية مصروفات", "Expense Debts"),
+                            modifier = Modifier.weight(1.15f),
+                            title = tr(isArabic, "مصاريف لسه هتندفع", "Upcoming Expenses"),
                             subtitle = "$unpaidExpenseCount • ${formatAmountMinor(unpaidExpenseDebtMinor, false)} $sym",
                             accent = ext.expenseColor,
                             selected = typeFilter == TransactionType.EXPENSE,
                             tag = "debt_tab_expense",
                             onClick = { typeFilter = TransactionType.EXPENSE }
                         )
+                        DebtTypeTabCard(
+                            modifier = Modifier.weight(1.0f),
+                            title = tr(isArabic, "سلف ومبالغ مستلمة", "Borrowed"),
+                            subtitle = "$unpaidIncomeCount • ${formatAmountMinor(unpaidIncomeDebtMinor, false)} $sym",
+                            accent = ext.warningAmber,
+                            selected = typeFilter == TransactionType.INCOME,
+                            tag = "debt_tab_income",
+                            onClick = { typeFilter = TransactionType.INCOME }
+                        )
                     }
                 }
             }
 
-            // 2. Search & Interactive Multi-Filter Card
+            // 2. Collapsible Dropdown Multi-Filter Card + Export Bar
             item {
-                SereneCard(contentPadding = PaddingValues(14.dp)) {
+                val activeCount = (if (searchQuery.isNotBlank()) 1 else 0) +
+                    (if (statusFilter != DebtStatusFilter.UNPAID) 1 else 0) +
+                    (if (typeFilter != "all") 1 else 0) +
+                    (if (selectedSource != null) 1 else 0) +
+                    (if (selectedCategory != null) 1 else 0)
+                val statusLabel = when (statusFilter) {
+                    DebtStatusFilter.UNPAID -> tr(isArabic, "القائمة (${unpaidList.size})", "Unpaid (${unpaidList.size})")
+                    DebtStatusFilter.ALL -> tr(isArabic, "الكل (${currencyDebts.size})", "All (${currencyDebts.size})")
+                    DebtStatusFilter.SETTLED -> tr(isArabic, "المسددة (${settledList.size})", "Settled (${settledList.size})")
+                }
+                CollapsibleFilterDropdownCard(
+                    isArabic = isArabic,
+                    activeFilterCount = activeCount,
+                    onResetFilters = if (hasActiveFilters) {
+                        {
+                            searchQuery = ""
+                            statusFilter = DebtStatusFilter.UNPAID
+                            typeFilter = "all"
+                            selectedSource = null
+                            selectedCategory = null
+                        }
+                    } else null,
+                    title = tr(isArabic, "فلاتر وبحث المبالغ المطلوبة ($statusLabel)", "Filter & Search ($statusLabel)"),
+                    testTagPrefix = "debts_filter_dropdown"
+                ) {
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
@@ -458,11 +669,7 @@ fun DebtsScreen(
                         },
                         placeholder = {
                             Text(
-                                text = tr(
-                                    isArabic,
-                                    "ابحث باسم الحاجة، الدائن، التصنيف، أو المصدر...",
-                                    "Search item name, creditor, category, source..."
-                                ),
+                                text = tr(isArabic, "ابحث باسم الحاجة، الجهة، التصنيف، أو المصدر...", "Search item, party, category, source..."),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         },
@@ -478,165 +685,63 @@ fun DebtsScreen(
                             .testTag("debts_search_input")
                     )
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    SmartSingleSelectDropdown(
+                        label = tr(isArabic, "حالة السداد", "Settlement Status"),
+                        selectedValue = statusFilter,
+                        options = listOf(
+                            DropdownFilterOption(DebtStatusFilter.UNPAID, tr(isArabic, "القائمة (${unpaidList.size})", "Unpaid (${unpaidList.size})")),
+                            DropdownFilterOption(DebtStatusFilter.ALL, tr(isArabic, "الكل (${currencyDebts.size})", "All (${currencyDebts.size})")),
+                            DropdownFilterOption(DebtStatusFilter.SETTLED, tr(isArabic, "تم سدادها (${settledList.size})", "Settled (${settledList.size})"))
+                        ),
+                        isArabic = isArabic,
+                        onSelected = { statusFilter = it },
+                        isHighlighted = statusFilter != DebtStatusFilter.UNPAID,
+                        testTag = "debt_status_dropdown"
+                    )
 
-                    // Status Filter Row (Unpaid / All / Settled)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        DebtFilterChip(
-                            modifier = Modifier.weight(1f),
-                            label = tr(isArabic, "القائمة (${unpaidList.size})", "Unpaid (${unpaidList.size})"),
-                            selected = statusFilter == DebtStatusFilter.UNPAID,
-                            tag = "debt_status_unpaid",
-                            onClick = { statusFilter = DebtStatusFilter.UNPAID }
-                        )
-                        DebtFilterChip(
-                            modifier = Modifier.weight(1f),
-                            label = tr(isArabic, "الكل (${currencyDebts.size})", "All (${currencyDebts.size})"),
-                            selected = statusFilter == DebtStatusFilter.ALL,
-                            tag = "debt_status_all",
-                            onClick = { statusFilter = DebtStatusFilter.ALL }
-                        )
-                        DebtFilterChip(
-                            modifier = Modifier.weight(1f),
-                            label = tr(isArabic, "تم سدادها (${settledList.size})", "Settled (${settledList.size})"),
-                            selected = statusFilter == DebtStatusFilter.SETTLED,
-                            tag = "debt_status_settled",
-                            onClick = { statusFilter = DebtStatusFilter.SETTLED }
-                        )
-                    }
-
-                    // Source Filter Strip
                     if (availableSources.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = tr(isArabic, "المصدر:", "Source:"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            DebtCompactPill(
-                                label = tr(isArabic, "الكل", "All"),
-                                selected = selectedSource == null,
-                                onClick = { selectedSource = null }
-                            )
-                            availableSources.forEach { src ->
-                                DebtCompactPill(
-                                    label = src,
-                                    selected = selectedSource == src,
-                                    onClick = { selectedSource = if (selectedSource == src) null else src }
-                                )
-                            }
-                        }
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "المصدر / الحساب", "Source / Account"),
+                            selectedValue = selectedSource,
+                            options = listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل المصادر", "All Sources"))) +
+                                availableSources.map { DropdownFilterOption<String?>(it, it) },
+                            isArabic = isArabic,
+                            onSelected = { selectedSource = it },
+                            isHighlighted = selectedSource != null,
+                            testTag = "debt_source_dropdown"
+                        )
                     }
 
-                    // Category Filter Strip
                     if (availableCategories.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = tr(isArabic, "التصنيف:", "Category:"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            DebtCompactPill(
-                                label = tr(isArabic, "الكل", "All"),
-                                selected = selectedCategory == null,
-                                onClick = { selectedCategory = null }
-                            )
-                            availableCategories.forEach { cat ->
-                                DebtCompactPill(
-                                    label = cat,
-                                    selected = selectedCategory == cat,
-                                    onClick = { selectedCategory = if (selectedCategory == cat) null else cat }
-                                )
-                            }
-                        }
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "التصنيف", "Category"),
+                            selectedValue = selectedCategory,
+                            options = listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل التصنيفات", "All Categories"))) +
+                                availableCategories.map { DropdownFilterOption<String?>(it, it) },
+                            isArabic = isArabic,
+                            onSelected = { selectedCategory = it },
+                            isHighlighted = selectedCategory != null,
+                            testTag = "debt_category_dropdown"
+                        )
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Group-by Mode + Filtered Subtotal + Reset
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = tr(isArabic, "تنظيم:", "Group:"),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            DebtCompactPill(
-                                label = tr(isArabic, "قائمة", "List"),
-                                selected = groupMode == DebtGroupMode.FLAT,
-                                onClick = { groupMode = DebtGroupMode.FLAT }
-                            )
-                            DebtCompactPill(
-                                label = tr(isArabic, "حسب المصدر", "By Source"),
-                                selected = groupMode == DebtGroupMode.BY_SOURCE,
-                                onClick = { groupMode = DebtGroupMode.BY_SOURCE }
-                            )
-                            DebtCompactPill(
-                                label = tr(isArabic, "حسب التصنيف", "By Category"),
-                                selected = groupMode == DebtGroupMode.BY_CATEGORY,
-                                onClick = { groupMode = DebtGroupMode.BY_CATEGORY }
-                            )
-                        }
-                        if (hasActiveFilters) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        searchQuery = ""
-                                        statusFilter = DebtStatusFilter.UNPAID
-                                        typeFilter = "all"
-                                        selectedSource = null
-                                        selectedCategory = null
-                                    }
-                                    .padding(horizontal = 6.dp, vertical = 4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Refresh,
-                                    contentDescription = null,
-                                    tint = ext.expenseColor,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text(
-                                    text = tr(isArabic, "ضبط", "Reset"),
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = ext.expenseColor
-                                )
-                            }
-                        }
-                    }
+                    SmartSingleSelectDropdown(
+                        label = tr(isArabic, "طريقة العرض والتنظيم", "Group By"),
+                        selectedValue = groupMode,
+                        options = listOf(
+                            DropdownFilterOption(DebtGroupMode.FLAT, tr(isArabic, "قائمة عادية", "Flat List")),
+                            DropdownFilterOption(DebtGroupMode.BY_SOURCE, tr(isArabic, "مجمع حسب المصدر", "By Source")),
+                            DropdownFilterOption(DebtGroupMode.BY_CATEGORY, tr(isArabic, "مجمع حسب التصنيف", "By Category"))
+                        ),
+                        isArabic = isArabic,
+                        onSelected = { groupMode = it },
+                        isHighlighted = groupMode != DebtGroupMode.FLAT,
+                        testTag = "debt_group_dropdown"
+                    )
                 }
             }
 
-            // 3. Filtered Results Subtotal Strip
+            // 3. Filtered Results Subtotal Strip + Formatted Export Button
             item {
                 Row(
                     modifier = Modifier
@@ -645,25 +750,41 @@ fun DebtsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = tr(
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = tr(
+                                isArabic,
+                                "المبالغ المطلوب دفعها قريباً (${filteredDebts.size + filteredPendingObligations.size})",
+                                "Upcoming Payments Due (${filteredDebts.size + filteredPendingObligations.size})"
+                            ),
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "${tr(isArabic, "الإجمالي:", "Total:")} ${formatAmountMinor(filteredTotalMinor)} $sym",
+                            style = AmountBodyStyle.copy(fontWeight = FontWeight.Bold),
+                            color = ext.expenseColor
+                        )
+                    }
+                    ExportDownloadButton(
+                        transactions = filteredDebts,
+                        obligations = filteredPendingObligations,
+                        preferredCurrency = validCurrency,
+                        reportTitle = tr(isArabic, "المبالغ المطلوب دفعها قريباً", "Upcoming Payments Due"),
+                        filterSummary = tr(
                             isArabic,
-                            "المديونيات المطابقة (${filteredDebts.size})",
-                            "Matching Debts (${filteredDebts.size})"
+                            "${filteredDebts.size + filteredPendingObligations.size} عملية • ${formatAmountMinor(filteredTotalMinor)} $sym",
+                            "${filteredDebts.size + filteredPendingObligations.size} entries • ${formatAmountMinor(filteredTotalMinor)} $sym"
                         ),
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "${tr(isArabic, "الإجمالي:", "Total:")} ${formatAmountMinor(filteredTotalMinor)} $sym",
-                        style = AmountBodyStyle.copy(fontWeight = FontWeight.Bold),
-                        color = ext.expenseColor
+                        isArabic = isArabic,
+                        compactLabel = true,
+                        testTag = "debts_export_btn"
                     )
                 }
             }
 
-            // 4. Empty State OR Organized Debt Cards
-            if (filteredDebts.isEmpty()) {
+            // 4. Empty State OR Organized Cards
+            if (filteredDebts.isEmpty() && filteredPendingObligations.isEmpty()) {
                 item {
                     SereneCard(contentPadding = PaddingValues(24.dp)) {
                         Column(
@@ -686,10 +807,10 @@ fun DebtsScreen(
                                 )
                             }
                             Text(
-                                text = if (allDebts.isEmpty()) {
-                                    tr(isArabic, "لا توجد مديونيات مسجلة عليك حالياً", "You have no recorded debts")
+                                text = if (allDebts.isEmpty() && pendingObligations.isEmpty()) {
+                                    tr(isArabic, "لا توجد مبالغ مطلوب دفعها قريباً حالياً ✓", "No upcoming payments due right now ✓")
                                 } else {
-                                    tr(isArabic, "لا توجد مديونيات مطابقة للفلاتر الحالية", "No debts match your current filters")
+                                    tr(isArabic, "لا توجد نتائج مطابقة للفلاتر الحالية", "No items match your current filters")
                                 },
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -698,22 +819,15 @@ fun DebtsScreen(
                             Text(
                                 text = tr(
                                     isArabic,
-                                    "يمكنك تسجيل أي مصروف بالمديونية أو إيراد بالمديونية (سلفة/قرض) من صفحة إضافة عملية.",
-                                    "Log any unpaid expense or borrowed income as a debt from the Add Transaction screen."
+                                    "يمكنك إضافة أي مصروف «لسه هيندفع قريباً» من شاشة الإضافة أو جدولة التزام بموعد وتنبيه.",
+                                    "Add any upcoming expense from the Add screen or schedule an obligation with reminders."
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
                             )
                             Button(
-                                onClick = {
-                                    val presetType = if (typeFilter == TransactionType.INCOME) {
-                                        TransactionType.INCOME
-                                    } else {
-                                        TransactionType.EXPENSE
-                                    }
-                                    onAddDebtClick(presetType)
-                                },
+                                onClick = { onAddDebtClick(TransactionType.EXPENSE) },
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = ext.heroCardBackground,
@@ -722,7 +836,7 @@ fun DebtsScreen(
                             ) {
                                 Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(tr(isArabic, "تسجيل مديونية جديدة", "Record New Debt"))
+                                Text(tr(isArabic, "إضافة مبلغ مطلوب دفعه قريباً", "Add Upcoming Payment"))
                             }
                         }
                     }
@@ -737,6 +851,7 @@ fun DebtsScreen(
                                 categories = categories,
                                 isArabic = isArabic,
                                 onToggleSettled = { pendingPayTx = tx },
+                                onReminderClick = { reminderEditTx = tx },
                                 onDeleteClick = { pendingDeleteTx = tx }
                             )
                         }
@@ -797,6 +912,7 @@ fun DebtsScreen(
                                     categories = categories,
                                     isArabic = isArabic,
                                     onToggleSettled = { pendingPayTx = tx },
+                                    onReminderClick = { reminderEditTx = tx },
                                     onDeleteClick = { pendingDeleteTx = tx }
                                 )
                             }
@@ -863,6 +979,58 @@ fun DebtsScreen(
             onDismiss = { pendingDeleteTx = null }
         )
     }
+
+    reminderEditTx?.let { tx ->
+        ReminderSettingsDialog(
+            itemTitle = tx.itemName.ifBlank { tx.category },
+            amountDisplay = "${formatAmountMinor(tx.amountMinor)} ${currencySymbol(tx.currency, isArabic)}",
+            partyName = tx.debtParty,
+            initialConfig = ItemReminderConfig(
+                enabled = tx.hasPaymentReminder,
+                dueDate = tx.paymentDueDate.ifBlank { currentIsoDate() },
+                dueTime = tx.paymentDueTime.ifBlank { "09:00" },
+                leadMinutes = tx.reminderLeadMinutes,
+                muted = tx.reminderMuted,
+                alertMode = tx.reminderAlertMode,
+                fullScreen = tx.reminderFullScreen,
+                speakAloud = tx.reminderSpeakAloud
+            ),
+            settings = settings,
+            isArabic = isArabic,
+            onSave = { cfg ->
+                if (cfg.enabled) onRequestNotificationPermission()
+                onUpdateTransactionReminder(tx.id, cfg)
+                reminderEditTx = null
+            },
+            onDismiss = { reminderEditTx = null }
+        )
+    }
+
+    reminderEditObligation?.let { ob ->
+        ReminderSettingsDialog(
+            itemTitle = ob.reason,
+            amountDisplay = "${formatAmountMinor(ob.amountMinor)} ${currencySymbol(ob.currency, isArabic)}",
+            partyName = ob.party,
+            initialConfig = ItemReminderConfig(
+                enabled = ob.reminderEnabled && !ob.reminderMuted,
+                dueDate = ob.dueDate.ifBlank { currentIsoDate() },
+                dueTime = ob.dueTime.ifBlank { "09:00" },
+                leadMinutes = ob.reminderLeadMinutes,
+                muted = ob.reminderMuted,
+                alertMode = ob.reminderAlertMode,
+                fullScreen = ob.reminderFullScreen,
+                speakAloud = ob.reminderSpeakAloud
+            ),
+            settings = settings,
+            isArabic = isArabic,
+            onSave = { cfg ->
+                if (cfg.enabled) onRequestNotificationPermission()
+                onUpdateObligationReminder(ob.id, cfg)
+                reminderEditObligation = null
+            },
+            onDismiss = { reminderEditObligation = null }
+        )
+    }
 }
 
 @Composable
@@ -919,6 +1087,7 @@ private fun DebtDetailCard(
     categories: List<CategoryEntity>,
     isArabic: Boolean,
     onToggleSettled: () -> Unit,
+    onReminderClick: () -> Unit = {},
     onDeleteClick: () -> Unit
 ) {
     val ext = LocalSereneColors.current
@@ -1122,9 +1291,9 @@ private fun DebtDetailCard(
                     )
                     Text(
                         text = if (tx.isDebtSettled) {
-                            tr(isArabic, "إعادة كدين قائم", "Reopen Debt")
+                            tr(isArabic, "إرجاع للمطلوب دفعه قريباً", "Move to Upcoming")
                         } else {
-                            tr(isArabic, "دفع المديونية", "Pay Debt")
+                            tr(isArabic, "تم الدفع", "Mark Paid")
                         },
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = if (tx.isDebtSettled) MaterialTheme.colorScheme.onSurfaceVariant else Color.White
@@ -1132,20 +1301,61 @@ private fun DebtDetailCard(
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(ext.cardSubtleBackground)
-                    .clickable(onClick = onDeleteClick),
-                contentAlignment = Alignment.Center
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Delete,
-                    contentDescription = tr(isArabic, "حذف", "Delete"),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
+                if (!tx.isDebtSettled) {
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(9.dp))
+                            .testTag("debt_tx_reminder_btn_${tx.id}")
+                            .clickable(onClick = onReminderClick),
+                        shape = RoundedCornerShape(9.dp),
+                        color = if (tx.hasPaymentReminder) ext.incomeContainer else ext.cardSubtleBackground,
+                        border = BorderStroke(
+                            1.dp,
+                            if (tx.hasPaymentReminder) ext.incomeColor.copy(alpha = 0.4f) else ext.cardBorder
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Tune,
+                                contentDescription = tr(isArabic, "إعدادات التنبيه", "Alert settings"),
+                                tint = if (tx.hasPaymentReminder) ext.incomeColor else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = if (tx.paymentDueDate.isNotBlank()) {
+                                    tr(isArabic, "تنبيه (${tx.paymentDueDate})", "Alert (${tx.paymentDueDate})")
+                                } else {
+                                    tr(isArabic, "تنبيه", "Alert")
+                                },
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = if (tx.hasPaymentReminder) ext.incomeColor else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(ext.cardSubtleBackground)
+                        .clickable(onClick = onDeleteClick),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = tr(isArabic, "حذف", "Delete"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }

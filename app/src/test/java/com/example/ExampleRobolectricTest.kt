@@ -117,4 +117,63 @@ class ExampleRobolectricTest {
             db.close()
         }
     }
+
+    @Test
+    fun `granular reset numbers queries isolate lifetime money from expenses and debts`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val repo = MizanityRepository(db)
+            repo.addTransaction(
+                TransactionEntity(
+                    type = TransactionType.INCOME,
+                    amountMinor = 100000L,
+                    currency = "EGP",
+                    source = "كاش / نقدي",
+                    category = "مرتب",
+                    date = "2026-11-20",
+                    time = "09:00"
+                )
+            )
+            repo.addTransaction(
+                TransactionEntity(
+                    type = TransactionType.EXPENSE,
+                    amountMinor = 30000L,
+                    currency = "EGP",
+                    source = "كاش / نقدي",
+                    category = "طعام وشراب",
+                    date = "2026-11-20",
+                    time = "13:00"
+                )
+            )
+            repo.addTransaction(
+                TransactionEntity(
+                    type = TransactionType.EXPENSE,
+                    amountMinor = 15000L,
+                    currency = "EGP",
+                    source = "كاش / نقدي",
+                    category = "فواتير",
+                    date = "2026-11-20",
+                    time = "15:00",
+                    isDebt = true,
+                    isDebtSettled = false
+                )
+            )
+
+            // Resetting expenses must leave lifetime added money untouched
+            repo.deleteTransactionsByType(TransactionType.EXPENSE)
+            val remainingAfterExpenseReset = repo.transactions.first()
+            assertEquals(1, remainingAfterExpenseReset.size)
+            assertEquals(TransactionType.INCOME, remainingAfterExpenseReset.first().type)
+            assertEquals(100000L, remainingAfterExpenseReset.first().amountMinor)
+
+            // Resetting lifetime added money zeros income cleanly
+            repo.deleteTransactionsByType(TransactionType.INCOME)
+            assertEquals(0, repo.transactions.first().size)
+        } finally {
+            db.close()
+        }
+    }
 }

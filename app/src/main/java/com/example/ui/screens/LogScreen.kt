@@ -70,8 +70,12 @@ import com.example.data.AppSettingsEntity
 import com.example.data.CategoryEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionType
+import com.example.ui.components.CollapsibleFilterDropdownCard
+import com.example.ui.components.DropdownFilterOption
+import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.components.TransactionRowItem
 import com.example.ui.theme.AmountHeadlineStyle
 import com.example.ui.theme.LocalSereneColors
@@ -109,13 +113,18 @@ fun LogScreen(
     val ext = LocalSereneColors.current
     var searchQuery by remember { mutableStateOf("") }
     var activeTypeTab by remember { mutableStateOf("all") } // all, expense, income, debt, debt_income, debt_expense
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
     var multiSelectMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var pendingDelete by remember { mutableStateOf<PendingLogDelete?>(null) }
     var showCategoryPurgePicker by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
 
-    val filteredList = remember(transactions, searchQuery, activeTypeTab) {
+    val availableCategories = remember(transactions) {
+        transactions.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+
+    val filteredList = remember(transactions, searchQuery, activeTypeTab, selectedCategory) {
         val q = searchQuery.trim()
         transactions.filter { tx ->
             val typeOk = when (activeTypeTab) {
@@ -125,6 +134,7 @@ fun LogScreen(
                 "debt_expense" -> tx.isDebt && tx.type == TransactionType.EXPENSE
                 else -> tx.type == activeTypeTab
             }
+            val catOk = selectedCategory == null || tx.category == selectedCategory
             val searchOk = q.isEmpty() ||
                 tx.category.contains(q, ignoreCase = true) ||
                 tx.source.contains(q, ignoreCase = true) ||
@@ -132,9 +142,14 @@ fun LogScreen(
                 tx.itemName.contains(q, ignoreCase = true) ||
                 tx.debtParty.contains(q, ignoreCase = true) ||
                 formatAmountMinor(tx.amountMinor).contains(q, ignoreCase = true)
-            typeOk && searchOk
+            typeOk && catOk && searchOk
         }
     }
+    val activeFilterCount = listOf(
+        searchQuery.isNotBlank(),
+        activeTypeTab != "all",
+        selectedCategory != null
+    ).count { it }
 
     val activeCurrency = settings.defaultCurrency
     val sameCurrencyTx = remember(filteredList, activeCurrency) {
@@ -252,186 +267,131 @@ fun LogScreen(
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
+                    ExportDownloadButton(
+                        transactions = filteredList,
+                        preferredCurrency = activeCurrency,
+                        reportTitle = tr(isArabic, "سجل العمليات المالية", "Financial Transactions Log"),
+                        filterSummary = tr(
+                            isArabic,
+                            "${filteredList.size} عملية مطابقة للفلاتر",
+                            "${filteredList.size} matching transactions"
+                        ),
+                        isArabic = isArabic,
+                        compactLabel = true,
+                        testTag = "log_export_btn",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp)
+                    )
+                }
+            }
+
+            // 2. Compact Collapsible Dropdown Filters (Search + Type + Category)
+            item {
+                val typeOptions = remember(transactions, isArabic) {
+                    val allDebtsCount = transactions.count { it.isDebt && !it.isDebtSettled }
+                    val incDebtCount = transactions.count { it.isDebt && !it.isDebtSettled && it.type == TransactionType.INCOME }
+                    val expDebtCount = transactions.count { it.isDebt && !it.isDebtSettled && it.type == TransactionType.EXPENSE }
+                    listOf(
+                        DropdownFilterOption("all", tr(isArabic, "الكل (${transactions.size})", "All (${transactions.size})")),
+                        DropdownFilterOption(TransactionType.EXPENSE, tr(isArabic, "مصاريف فقط", "Expenses Only")),
+                        DropdownFilterOption(TransactionType.INCOME, tr(isArabic, "دخل فقط", "Income Only")),
+                        DropdownFilterOption("debt", tr(isArabic, "كل المديونيات ($allDebtsCount)", "All Debts ($allDebtsCount)")),
+                        DropdownFilterOption("debt_income", tr(isArabic, "مديونية إيرادات دخلت لحسابي ($incDebtCount)", "Income Debts ($incDebtCount)")),
+                        DropdownFilterOption("debt_expense", tr(isArabic, "مديونية مصروفات ($expDebtCount)", "Expense Debts ($expDebtCount)"))
+                    )
+                }
+                val categoryOptions = remember(availableCategories, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل التصنيفات", "All Categories"))) +
+                        availableCategories.map { DropdownFilterOption<String?>(it, it) }
+                }
+
+                CollapsibleFilterDropdownCard(
+                    isArabic = isArabic,
+                    activeFilterCount = activeFilterCount,
+                    onResetFilters = if (activeFilterCount > 0) {
+                        {
+                            searchQuery = ""
+                            activeTypeTab = "all"
+                            selectedCategory = null
+                        }
+                    } else null,
+                    title = tr(isArabic, "بحث وفلاتر السجل", "Log Search & Filters"),
+                    testTagPrefix = "log_filters"
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        placeholder = {
+                            Text(
+                                text = tr(
+                                    isArabic,
+                                    "ابحث في الأسماء، المصادر، والملاحظات...",
+                                    "Search categories, sources, notes, amounts..."
+                                ),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Cancel,
+                                    contentDescription = tr(isArabic, "مسح البحث", "Clear Search"),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable { searchQuery = "" }
+                                        .padding(4.dp)
+                                )
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = ext.cardSubtleBackground,
+                            unfocusedContainerColor = ext.cardSubtleBackground,
+                            unfocusedBorderColor = ext.cardBorder.copy(alpha = 0.6f),
+                            focusedBorderColor = MaterialTheme.colorScheme.primary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("log_search_input")
+                    )
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(42.dp)
-                                .testTag("log_export_btn")
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { showExportDialog = true },
-                            shape = RoundedCornerShape(10.dp),
-                            color = ext.cardSubtleBackground
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.padding(horizontal = 10.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.FileDownload,
-                                    contentDescription = null,
-                                    tint = ext.incomeColor,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = tr(isArabic, "تصدير Excel (XLSX / CSV)", "Export Excel / CSV"),
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-
-                        if (transactions.isNotEmpty()) {
-                            Surface(
-                                modifier = Modifier
-                                    .height(42.dp)
-                                    .testTag("log_clear_all_btn")
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable { pendingDelete = PendingLogDelete.WipeAll },
-                                shape = RoundedCornerShape(10.dp),
-                                color = ext.expenseContainer.copy(alpha = 0.45f)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center,
-                                    modifier = Modifier.padding(horizontal = 12.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.DeleteSweep,
-                                        contentDescription = null,
-                                        tint = ext.expenseColor,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = tr(isArabic, "مسح السجل", "Clear Log"),
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = ext.expenseColor
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 2. Instant Search Input
-            item {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    singleLine = true,
-                    placeholder = {
-                        Text(
-                            text = tr(
-                                isArabic,
-                                "ابحث في الأسماء، المصادر، والملاحظات...",
-                                "Search categories, sources, notes, amounts..."
-                            ),
-                            style = MaterialTheme.typography.bodyMedium
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "النوع", "Type"),
+                            selectedValue = activeTypeTab,
+                            options = typeOptions,
+                            isArabic = isArabic,
+                            onSelected = { activeTypeTab = it },
+                            isHighlighted = activeTypeTab != "all",
+                            testTag = "log_type_dropdown",
+                            modifier = Modifier.weight(1f)
                         )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Search,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            Icon(
-                                imageVector = Icons.Outlined.Cancel,
-                                contentDescription = tr(isArabic, "مسح البحث", "Clear Search"),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .clickable { searchQuery = "" }
-                                    .padding(4.dp)
+                        if (availableCategories.isNotEmpty()) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "التصنيف", "Category"),
+                                selectedValue = selectedCategory,
+                                options = categoryOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedCategory = it },
+                                isHighlighted = selectedCategory != null,
+                                testTag = "log_category_dropdown",
+                                modifier = Modifier.weight(1f)
                             )
                         }
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = ext.cardBackground,
-                        unfocusedContainerColor = ext.cardBackground,
-                        unfocusedBorderColor = ext.cardBorder.copy(alpha = 0.7f),
-                        focusedBorderColor = MaterialTheme.colorScheme.primary
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("log_search_input")
-                )
-            }
-
-            // 3. Segment Filter Pills (All / Expenses / Income)
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    LogFilterTabPill(
-                        label = tr(isArabic, "الكل", "All"),
-                        countBadge = transactions.size,
-                        icon = Icons.Outlined.ViewList,
-                        iconTint = null,
-                        selected = activeTypeTab == "all",
-                        tag = "log_tab_all",
-                        onClick = { activeTypeTab = "all" }
-                    )
-                    LogFilterTabPill(
-                        label = tr(isArabic, "مصاريف فقط", "Expenses Only"),
-                        countBadge = null,
-                        icon = Icons.Outlined.ArrowUpward,
-                        iconTint = ext.chartRose,
-                        selected = activeTypeTab == TransactionType.EXPENSE,
-                        tag = "log_tab_expense",
-                        onClick = { activeTypeTab = TransactionType.EXPENSE }
-                    )
-                    LogFilterTabPill(
-                        label = tr(isArabic, "دخل فقط", "Income Only"),
-                        countBadge = null,
-                        icon = Icons.Outlined.ArrowDownward,
-                        iconTint = ext.incomeColor,
-                        selected = activeTypeTab == TransactionType.INCOME,
-                        tag = "log_tab_income",
-                        onClick = { activeTypeTab = TransactionType.INCOME }
-                    )
-                    LogFilterTabPill(
-                        label = tr(isArabic, "كل المديونيات", "All Debts"),
-                        countBadge = transactions.count { it.isDebt && !it.isDebtSettled }.takeIf { it > 0 },
-                        icon = Icons.Outlined.ReceiptLong,
-                        iconTint = ext.expenseColor,
-                        selected = activeTypeTab == "debt",
-                        tag = "log_tab_debt",
-                        onClick = { activeTypeTab = "debt" }
-                    )
-                    LogFilterTabPill(
-                        label = tr(isArabic, "مديونية إيرادات دخلت لحسابي", "Income Entered Account"),
-                        countBadge = transactions.count { it.isDebt && !it.isDebtSettled && it.type == TransactionType.INCOME }.takeIf { it > 0 },
-                        icon = Icons.Outlined.ArrowDownward,
-                        iconTint = ext.warningAmber,
-                        selected = activeTypeTab == "debt_income",
-                        tag = "log_tab_debt_income",
-                        onClick = { activeTypeTab = "debt_income" }
-                    )
-                    LogFilterTabPill(
-                        label = tr(isArabic, "مديونية مصروفات", "Expense Debts"),
-                        countBadge = transactions.count { it.isDebt && !it.isDebtSettled && it.type == TransactionType.EXPENSE }.takeIf { it > 0 },
-                        icon = Icons.Outlined.ArrowUpward,
-                        iconTint = ext.expenseColor,
-                        selected = activeTypeTab == "debt_expense",
-                        tag = "log_tab_debt_expense",
-                        onClick = { activeTypeTab = "debt_expense" }
-                    )
+                    }
                 }
             }
 

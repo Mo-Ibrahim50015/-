@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.app.TimePickerDialog
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -32,6 +31,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AccountBalance
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.AllInclusive
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -66,9 +66,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import com.example.data.AccountEntity
 import com.example.data.AppSettingsEntity
 import com.example.data.CategoryEntity
+import com.example.data.ObligationEntity
 import com.example.data.SavedFilterEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionType
@@ -93,9 +96,15 @@ import com.example.ui.DatePreset
 import com.example.ui.DebtFilter
 import com.example.ui.ReportAnalytics
 import com.example.ui.ReportFilterState
+import com.example.ui.components.CollapsibleFilterDropdownCard
+import com.example.ui.components.DropdownFilterOption
+import com.example.ui.components.ExportDownloadButton
+import com.example.ui.components.FastTimePickerDialog
 import com.example.ui.components.ReportsAnalyticsDashboard
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartMultiSelectDropdown
+import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.components.TransactionRowItem
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.LocalSereneColors
@@ -103,6 +112,7 @@ import com.example.util.SupportedCurrencies
 import com.example.util.currencySymbol
 import com.example.util.currentIsoDate
 import com.example.util.formatAmountMinor
+import com.example.util.formatTime12Hour
 import com.example.util.iconForKey
 import com.example.util.parseAmountToMinor
 import com.example.util.tr
@@ -110,8 +120,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class ReportsTopTab {
-    REPORTS, DASHBOARD
+enum class ReportsTopTab {
+    REPORTS, DASHBOARD, PLAN
 }
 
 private enum class FilterDockTab {
@@ -128,6 +138,10 @@ fun ReportsScreen(
     savedFilters: List<SavedFilterEntity>,
     settings: AppSettingsEntity,
     isArabic: Boolean,
+    allTransactions: List<TransactionEntity> = emptyList(),
+    obligations: List<ObligationEntity> = emptyList(),
+    requestedTopTab: ReportsTopTab = ReportsTopTab.REPORTS,
+    requestedTopTabNonce: Int = 0,
     onUpdateFilter: ((ReportFilterState) -> ReportFilterState) -> Unit,
     onResetFilter: () -> Unit,
     onSaveFilter: (name: String, asDefault: Boolean) -> Unit,
@@ -138,16 +152,27 @@ fun ReportsScreen(
     onExportExcel: (List<TransactionEntity>) -> Unit,
     onDeleteTransaction: (Long) -> Unit,
     onToggleDebtSettled: (Long, Boolean) -> Unit,
+    onSetObligationPaid: (Long, Boolean) -> Unit = { _, _ -> },
     onViewFullLog: () -> Unit,
     onOpenIncomeDetails: () -> Unit,
     onOpenExpenseDetails: () -> Unit,
     onOpenDebts: () -> Unit,
-    onOpenPayments: () -> Unit
+    onOpenPayments: () -> Unit,
+    onOpenLifetimeMoney: () -> Unit = {},
+    onOpenObligations: () -> Unit = {},
+    onOpenMoneyFlowGuide: () -> Unit = {},
+    onOpenDrillDown: (FlowDrillDownSpec) -> Unit = {}
 ) {
     val ext = LocalSereneColors.current
-    val context = LocalContext.current
 
-    var activeTopTab by remember { mutableStateOf(ReportsTopTab.REPORTS) }
+    var activeTopTab by rememberSaveable { mutableStateOf(requestedTopTab) }
+    var lastAppliedTabNonce by rememberSaveable { mutableStateOf(requestedTopTabNonce) }
+    LaunchedEffect(requestedTopTabNonce) {
+        if (requestedTopTabNonce > lastAppliedTabNonce) {
+            activeTopTab = requestedTopTab
+            lastAppliedTabNonce = requestedTopTabNonce
+        }
+    }
     var activeDockTab by remember { mutableStateOf(FilterDockTab.TYPE) }
     var showSaveFilterDialog by remember { mutableStateOf(false) }
     var saveFilterName by remember { mutableStateOf("") }
@@ -164,8 +189,9 @@ fun ReportsScreen(
         mutableStateOf(filter.amountValue2Minor?.let { String.format(Locale.US, "%.0f", it / 100.0) } ?: "")
     }
 
-    // Date picker target: 1 or 2
+    // Date & Time picker target slots: 1 or 2
     var activeDatePickerSlot by remember { mutableStateOf<Int?>(null) }
+    var activeTimePickerSlot by remember { mutableStateOf<Int?>(null) }
 
     val summary = analytics.primarySummary
     val sym = currencySymbol(summary.currency, isArabic)
@@ -250,126 +276,122 @@ fun ReportsScreen(
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 32.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        // 0. Quick Access Strip to Full Detail Pages (Income, Expenses, Debts, Payments)
+                        // 0. Quick Access Strip to Full Detail Pages (Income, Expenses, Upcoming Due, Actually Paid)
                         item {
+                            val actualPaidCount = summary.paidExpenseCount + summary.settledDebtCount + summary.paidScheduledObligationsCount
+                            val upcomingDueCount = summary.unpaidDebtCount + summary.pendingScheduledObligationsCount
                             ReportsQuickDetailsStrip(
-                                totalIncomeMinor = summary.totalIncomeMinor,
+                                totalIncomeMinor = summary.actualCashInMinor,
                                 totalExpenseMinor = summary.totalExpenseMinor,
-                                totalUnpaidDebtMinor = summary.totalUnpaidDebtMinor,
-                                unpaidDebtCount = summary.unpaidDebtCount,
-                                totalPaidMinor = summary.settledDebtMinor,
-                                paidCount = summary.settledDebtCount,
+                                totalUnpaidDebtMinor = summary.totalPendingObligationsMinor,
+                                unpaidDebtCount = upcomingDueCount,
+                                totalPaidMinor = summary.actualCashOutMinor,
+                                paidCount = actualPaidCount,
                                 currencySymbol = sym,
                                 isArabic = isArabic,
                                 onOpenIncomeDetails = onOpenIncomeDetails,
                                 onOpenExpenseDetails = onOpenExpenseDetails,
                                 onOpenDebts = onOpenDebts,
-                                onOpenPayments = onOpenPayments
+                                onOpenPayments = onOpenPayments,
+                                onOpenMoneyFlowGuide = { activeTopTab = ReportsTopTab.PLAN }
                             )
                         }
 
-                        // 1. Smart Filter Dock Card
+                        // 1. Smart Collapsible Filter Dropdown Card (Saves space & auto-searchable >5 items)
                         item {
-                SereneCard(contentPadding = PaddingValues(14.dp)) {
-                    // Header row + Save Filter / Save Default
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Tune,
-                                contentDescription = null,
-                                tint = ext.incomeColor,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = tr(isArabic, "الفلاتر الذكية السريعة", "Smart Quick Filters"),
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .testTag("save_filter_btn")
-                                    .clickable {
-                                        saveFilterName = ""
-                                        showSaveFilterDialog = true
-                                    },
-                                shape = RoundedCornerShape(8.dp),
-                                color = ext.cardContainer
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.BookmarkAdd,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                    Text(
-                                        text = tr(isArabic, "حفظ الفلتر", "Save"),
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
+                            val activeCount = remember(filter) {
+                                (if (filter.type != "all") 1 else 0) +
+                                    (if (filter.debtFilter != DebtFilter.ALL) 1 else 0) +
+                                    (if (filter.categories.isNotEmpty()) 1 else 0) +
+                                    (if (filter.sources.isNotEmpty()) 1 else 0) +
+                                    (if (filter.currencies.isNotEmpty()) 1 else 0) +
+                                    (if (filter.amountOp != ComparisonOperator.NONE && filter.amountValue1Minor != null) 1 else 0) +
+                                    (if (filter.datePreset != DatePreset.ALL) 1 else 0) +
+                                    (if (filter.timeOp != ComparisonOperator.NONE) 1 else 0)
                             }
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .testTag("save_default_filter_btn")
-                                    .clickable {
-                                        onSaveFilter(
-                                            tr(isArabic, "الفلتر الافتراضي", "Default Filter"),
-                                            true
-                                        )
-                                    },
-                                shape = RoundedCornerShape(8.dp),
-                                color = ext.heroCardBackground
+                            CollapsibleFilterDropdownCard(
+                                isArabic = isArabic,
+                                activeFilterCount = activeCount,
+                                onResetFilters = if (activeCount > 0) {
+                                    {
+                                        amountInput1 = ""
+                                        amountInput2 = ""
+                                        onResetFilter()
+                                    }
+                                } else null,
+                                title = tr(isArabic, "الفلاتر الذكية السريعة", "Smart Quick Filters"),
+                                testTagPrefix = "reports_filter_dropdown"
                             ) {
+                                // Save Filter / Save Default Row
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(
-                                        Icons.Outlined.Verified,
-                                        contentDescription = null,
-                                        tint = ext.heroCardOnBackground,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                    Text(
-                                        text = tr(isArabic, "حفظ كافتراضية", "Set Default"),
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = ext.heroCardOnBackground
-                                    )
+                                    Surface(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .testTag("save_filter_btn")
+                                            .clickable {
+                                                saveFilterName = ""
+                                                showSaveFilterDialog = true
+                                            },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = ext.cardContainer
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.BookmarkAdd,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = tr(isArabic, "حفظ الفلتر", "Save Preset"),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Surface(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .testTag("save_default_filter_btn")
+                                            .clickable {
+                                                onSaveFilter(
+                                                    tr(isArabic, "الفلتر الافتراضي", "Default Filter"),
+                                                    true
+                                                )
+                                            },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = ext.heroCardBackground
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.Verified,
+                                                contentDescription = null,
+                                                tint = ext.heroCardOnBackground,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = tr(isArabic, "حفظ كافتراضية", "Set Default"),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = ext.heroCardOnBackground
+                                            )
+                                        }
+                                    }
                                 }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = tr(
-                            isArabic,
-                            "اضغط على أي تصنيف لتخصيص الشروط بدقة متناهية (تعمل جميعاً بمنطق AND):",
-                            "Tap any category to combine filters with exact AND logic:"
-                        ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -483,119 +505,81 @@ fun ReportsScreen(
                                         )
                                     }
 
-                                    // Debt / Settlement Nature Filter Strip (Paid/Earned vs Debts Owed)
-                                    Text(
-                                        text = tr(isArabic, "حالة المديونية والسداد:", "Debt & Settlement Status:"),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        val debtOptions = listOf(
-                                            DebtFilter.ALL to tr(isArabic, "الكل", "All"),
-                                            DebtFilter.NON_DEBT to tr(isArabic, "مدفوع ومكتسب", "Paid & Earned"),
-                                            DebtFilter.DEBT_UNPAID to tr(isArabic, "مديونيات قائمة", "Unpaid Debts"),
-                                            DebtFilter.DEBT_INCOME to tr(isArabic, "مديونية إيرادات", "Income Debts"),
-                                            DebtFilter.DEBT_EXPENSE to tr(isArabic, "مديونية مصروفات", "Expense Debts"),
-                                            DebtFilter.DEBT_SETTLED to tr(isArabic, "المدفوعات (الكل)", "Payments (All)"),
-                                            DebtFilter.PAYMENTS_INCOME to tr(isArabic, "مدفوعات الإيرادات", "Paid Income"),
-                                            DebtFilter.PAYMENTS_EXPENSE to tr(isArabic, "مدفوعات المصروفات", "Paid Expenses"),
-                                            DebtFilter.DEBT_ALL to tr(isArabic, "كل المديونيات", "All Debts")
+                                    // Debt / Settlement Nature Searchable Dropdown (>5 items)
+                                    val debtDropdownOptions = remember(isArabic) {
+                                        listOf(
+                                            DropdownFilterOption(DebtFilter.ALL, tr(isArabic, "الكل", "All")),
+                                            DropdownFilterOption(DebtFilter.NON_DEBT, tr(isArabic, "مدفوع ومكتسب", "Paid & Earned")),
+                                            DropdownFilterOption(DebtFilter.DEBT_UNPAID, tr(isArabic, "مبالغ لسه هتندفع", "Upcoming Unpaid")),
+                                            DropdownFilterOption(DebtFilter.DEBT_INCOME, tr(isArabic, "سلف ومبالغ مستلمة للرد", "Borrowed to Repay")),
+                                            DropdownFilterOption(DebtFilter.DEBT_EXPENSE, tr(isArabic, "مصاريف لسه هتندفع", "Unpaid Expenses")),
+                                            DropdownFilterOption(DebtFilter.DEBT_SETTLED, tr(isArabic, "المدفوعات المسددة (الكل)", "Settled Payments (All)")),
+                                            DropdownFilterOption(DebtFilter.PAYMENTS_INCOME, tr(isArabic, "سلف تم سدادها", "Repaid Loans")),
+                                            DropdownFilterOption(DebtFilter.PAYMENTS_EXPENSE, tr(isArabic, "مصاريف مؤجلة تم سدادها", "Settled Expenses")),
+                                            DropdownFilterOption(DebtFilter.DEBT_ALL, tr(isArabic, "كل العمليات المؤجلة", "All Deferred"))
                                         )
-                                        debtOptions.forEach { (key, lbl) ->
-                                            SelectableFilterPill(
-                                                label = lbl,
-                                                selected = filter.debtFilter == key,
-                                                onClick = { onUpdateFilter { it.copy(debtFilter = key) } }
-                                            )
-                                        }
                                     }
+                                    SmartSingleSelectDropdown(
+                                        label = tr(isArabic, "حالة السداد والمبالغ المؤجلة", "Payment & Debt Status"),
+                                        selectedValue = filter.debtFilter,
+                                        options = debtDropdownOptions,
+                                        isArabic = isArabic,
+                                        onSelected = { key -> onUpdateFilter { it.copy(debtFilter = key) } },
+                                        isHighlighted = filter.debtFilter != DebtFilter.ALL,
+                                        testTag = "reports_debt_status_dropdown"
+                                    )
 
-                                    // Multi-select Category Filter Pills
+                                    // Multi-select Category Dropdown (>5 auto-searchable!)
                                     if (categories.isNotEmpty()) {
-                                        Text(
-                                            text = tr(isArabic, "تصفية حسب التصنيف (اختيار متعدد):", "Filter by Category (multi-select):"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        SmartMultiSelectDropdown(
+                                            label = tr(isArabic, "التصنيف (اختيار متعدد)", "Category (multi-select)"),
+                                            options = categories.map { it.name }.distinct(),
+                                            selectedValues = filter.categories,
+                                            isArabic = isArabic,
+                                            onToggle = { cat ->
+                                                onUpdateFilter { f ->
+                                                    val next = if (cat in f.categories) f.categories - cat else f.categories + cat
+                                                    f.copy(categories = next)
+                                                }
+                                            },
+                                            onClear = { onUpdateFilter { it.copy(categories = emptySet()) } },
+                                            testTag = "reports_categories_dropdown"
                                         )
-                                        FlowRow(
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            categories.forEach { cat ->
-                                                val chosen = cat.name in filter.categories
-                                                SelectableFilterPill(
-                                                    label = cat.name,
-                                                    selected = chosen,
-                                                    onClick = {
-                                                        onUpdateFilter { state ->
-                                                            val next = if (chosen) state.categories - cat.name else state.categories + cat.name
-                                                            state.copy(categories = next)
-                                                        }
-                                                    }
-                                                )
-                                            }
-                                        }
                                     }
                                 }
 
                                 FilterDockTab.SOURCE -> {
-                                    Text(
-                                        text = tr(isArabic, "طريقة الدفع أو الحساب المالي (واحد أو أكثر):", "Accounts / Payment Sources (multi-select):"),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    SmartMultiSelectDropdown(
+                                        label = tr(isArabic, "طريقة الدفع أو الحساب المالي", "Accounts / Payment Sources"),
+                                        options = accounts.map { it.name }.distinct(),
+                                        selectedValues = filter.sources,
+                                        isArabic = isArabic,
+                                        onToggle = { src ->
+                                            onUpdateFilter { f ->
+                                                val next = if (src in f.sources) f.sources - src else f.sources + src
+                                                f.copy(sources = next)
+                                            }
+                                        },
+                                        onClear = { onUpdateFilter { it.copy(sources = emptySet()) } },
+                                        testTag = "reports_sources_dropdown"
                                     )
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        accounts.forEach { acc ->
-                                            val chosen = acc.name in filter.sources
-                                            SelectableFilterPill(
-                                                label = acc.name,
-                                                selected = chosen,
-                                                icon = iconForKey(acc.iconKey),
-                                                onClick = {
-                                                    onUpdateFilter { state ->
-                                                        val next = if (chosen) state.sources - acc.name else state.sources + acc.name
-                                                        state.copy(sources = next)
-                                                    }
-                                                }
-                                            )
-                                        }
-                                    }
                                 }
 
                                 FilterDockTab.CURRENCY -> {
-                                    Text(
-                                        text = tr(isArabic, "عملة العمليات المسجلة (واحدة أو أكثر):", "Transaction Currencies (multi-select):"),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    SmartMultiSelectDropdown(
+                                        label = tr(isArabic, "عملة العمليات المسجلة", "Transaction Currencies"),
+                                        options = SupportedCurrencies.map { it.code },
+                                        selectedValues = filter.currencies,
+                                        isArabic = isArabic,
+                                        onToggle = { code ->
+                                            onUpdateFilter { f ->
+                                                val next = if (code in f.currencies) f.currencies - code else f.currencies + code
+                                                f.copy(currencies = next)
+                                            }
+                                        },
+                                        onClear = { onUpdateFilter { it.copy(currencies = emptySet()) } },
+                                        testTag = "reports_currencies_dropdown"
                                     )
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        SupportedCurrencies.forEach { curr ->
-                                            val chosen = curr.code in filter.currencies
-                                            SelectableFilterPill(
-                                                label = "${if (isArabic) curr.symbolAr else curr.symbolEn} (${curr.code})",
-                                                selected = chosen,
-                                                onClick = {
-                                                    onUpdateFilter { state ->
-                                                        val next = if (chosen) state.currencies - curr.code else state.currencies + curr.code
-                                                        state.copy(currencies = next)
-                                                    }
-                                                }
-                                            )
-                                        }
-                                    }
                                 }
 
                                 FilterDockTab.OPERATOR -> {
@@ -815,17 +799,12 @@ fun ReportsScreen(
                                                 modifier = Modifier
                                                     .weight(1f)
                                                     .clip(RoundedCornerShape(10.dp))
-                                                    .clickable {
-                                                        TimePickerDialog(context, { _, h, m ->
-                                                            val t = String.format(Locale.US, "%02d:%02d", h, m)
-                                                            onUpdateFilter { it.copy(timeValue1 = t) }
-                                                        }, 9, 0, true).show()
-                                                    },
+                                                    .clickable { activeTimePickerSlot = 1 },
                                                 shape = RoundedCornerShape(10.dp),
                                                 color = ext.cardBackground
                                             ) {
                                                 Text(
-                                                    text = filter.timeValue1.ifBlank { "09:00" },
+                                                    text = formatTime12Hour(filter.timeValue1.ifBlank { "09:00" }, isArabic),
                                                     style = MaterialTheme.typography.labelMedium,
                                                     modifier = Modifier.padding(10.dp),
                                                     textAlign = TextAlign.Center
@@ -836,17 +815,12 @@ fun ReportsScreen(
                                                     modifier = Modifier
                                                         .weight(1f)
                                                         .clip(RoundedCornerShape(10.dp))
-                                                        .clickable {
-                                                            TimePickerDialog(context, { _, h, m ->
-                                                                val t = String.format(Locale.US, "%02d:%02d", h, m)
-                                                                onUpdateFilter { it.copy(timeValue2 = t) }
-                                                            }, 21, 0, true).show()
-                                                        },
+                                                        .clickable { activeTimePickerSlot = 2 },
                                                     shape = RoundedCornerShape(10.dp),
                                                     color = ext.cardBackground
                                                 ) {
                                                     Text(
-                                                        text = filter.timeValue2.ifBlank { "21:00" },
+                                                        text = formatTime12Hour(filter.timeValue2.ifBlank { "21:00" }, isArabic),
                                                         style = MaterialTheme.typography.labelMedium,
                                                         modifier = Modifier.padding(10.dp),
                                                         textAlign = TextAlign.Center
@@ -964,14 +938,26 @@ fun ReportsScreen(
                 }
             }
 
-            // 2. Interactive Export Toolbar (PDF / Image / Excel — Filtered Results Only!)
+            // 2. Interactive Export & Direct Download Bar (Formatted PDF / Excel / CSV / PNG!)
             item {
-                ReportsExportToolbarCard(
-                    isArabic = isArabic,
-                    onExportPdf = { onExportPdf(filterSummaryText) },
-                    onExportImage = { onExportImage(filterSummaryText) },
-                    onExportExcel = { onExportExcel(analytics.filteredTransactions) }
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExportDownloadButton(
+                        transactions = analytics.filteredTransactions,
+                        obligations = obligations,
+                        preferredCurrency = summary.currency.ifBlank { settings.defaultCurrency },
+                        reportTitle = tr(isArabic, "تقرير مصروفي المفلتر", "Masrofy Filtered Report"),
+                        filterSummary = filterSummaryText,
+                        isArabic = isArabic,
+                        modifier = Modifier.fillMaxWidth(),
+                        testTag = "reports_universal_export_btn"
+                    )
+                    ReportsExportToolbarCard(
+                        isArabic = isArabic,
+                        onExportPdf = { onExportPdf(filterSummaryText) },
+                        onExportImage = { onExportImage(filterSummaryText) },
+                        onExportExcel = { onExportExcel(analytics.filteredTransactions) }
+                    )
+                }
             }
 
             // 3. Matching Transactions List Card (Dashboard moved to dedicated top tab)
@@ -1114,22 +1100,30 @@ fun ReportsScreen(
                             )
                         }
 
-                        // 1b. Quick Access to Dedicated Detail Pages from Dashboard
-                        item {
-                            ReportsQuickDetailsStrip(
-                                totalIncomeMinor = summary.totalIncomeMinor,
-                                totalExpenseMinor = summary.totalExpenseMinor,
-                                totalUnpaidDebtMinor = summary.totalUnpaidDebtMinor,
-                                unpaidDebtCount = summary.unpaidDebtCount,
-                                totalPaidMinor = summary.settledDebtMinor,
-                                paidCount = summary.settledDebtCount,
-                                currencySymbol = sym,
-                                isArabic = isArabic,
-                                onOpenIncomeDetails = onOpenIncomeDetails,
-                                onOpenExpenseDetails = onOpenExpenseDetails,
-                                onOpenDebts = onOpenDebts,
-                                onOpenPayments = onOpenPayments
-                            )
+                        // 1b. Quick Access to Dedicated Detail Pages from Dashboard (contextually filtered)
+                        val dashboardConfig = settings.analyticsDashboardConfig()
+                        if (dashboardConfig.showQuickDetailsBoxes) {
+                            item {
+                                val actualPaidCount = summary.paidExpenseCount + summary.settledDebtCount + summary.paidScheduledObligationsCount
+                                val upcomingDueCount = summary.unpaidDebtCount + summary.pendingScheduledObligationsCount
+                                ReportsQuickDetailsStrip(
+                                    totalIncomeMinor = summary.actualCashInMinor,
+                                    totalExpenseMinor = summary.totalExpenseMinor,
+                                    totalUnpaidDebtMinor = summary.totalPendingObligationsMinor,
+                                    unpaidDebtCount = upcomingDueCount,
+                                    totalPaidMinor = summary.actualCashOutMinor,
+                                    paidCount = actualPaidCount,
+                                    currencySymbol = sym,
+                                    isArabic = isArabic,
+                                    filter = filter,
+                                    contextualOnly = dashboardConfig.contextualFilterCardsOnly,
+                                    onOpenIncomeDetails = onOpenIncomeDetails,
+                                    onOpenExpenseDetails = onOpenExpenseDetails,
+                                    onOpenDebts = onOpenDebts,
+                                    onOpenPayments = onOpenPayments,
+                                    onOpenMoneyFlowGuide = { activeTopTab = ReportsTopTab.PLAN }
+                                )
+                            }
                         }
 
                         // 2. Full Interactive & Responsive Data Analytics Dashboard
@@ -1139,6 +1133,7 @@ fun ReportsScreen(
                                 filter = filter,
                                 isArabic = isArabic,
                                 showCharts = true,
+                                dashboardConfig = dashboardConfig,
                                 onToggleCategoryFilter = { category ->
                                     onUpdateFilter { state ->
                                         val next = if (category in state.categories) {
@@ -1175,6 +1170,21 @@ fun ReportsScreen(
                             )
                         }
                     }
+                }
+
+                ReportsTopTab.PLAN -> {
+                    MoneyFlowGuideScreen(
+                        transactions = allTransactions,
+                        obligations = obligations,
+                        settings = settings,
+                        isArabic = isArabic,
+                        onOpenLifetimeMoney = onOpenLifetimeMoney,
+                        onOpenExpenseDetails = onOpenExpenseDetails,
+                        onOpenObligations = onOpenObligations,
+                        onSetObligationPaid = onSetObligationPaid,
+                        onToggleDebtSettled = onToggleDebtSettled,
+                        onOpenDrillDown = onOpenDrillDown
+                    )
                 }
             }
         }
@@ -1245,6 +1255,23 @@ fun ReportsScreen(
         ) {
             DatePicker(state = pickerState)
         }
+    }
+
+    // Zero-lag FastTimePickerDialog for Time Filter
+    activeTimePickerSlot?.let { slot ->
+        FastTimePickerDialog(
+            initialTime24 = if (slot == 1) filter.timeValue1.ifBlank { "09:00" } else filter.timeValue2.ifBlank { "21:00" },
+            isArabic = isArabic,
+            title = if (slot == 1) tr(isArabic, "اختر وقت البداية", "Select Start Time") else tr(isArabic, "اختر وقت النهاية", "Select End Time"),
+            onConfirm = { picked ->
+                onUpdateFilter { state ->
+                    if (slot == 1) state.copy(timeValue1 = picked)
+                    else state.copy(timeValue2 = picked)
+                }
+                activeTimePickerSlot = null
+            },
+            onDismiss = { activeTimePickerSlot = null }
+        )
     }
 
     pendingDeleteTx?.let { tx ->
@@ -1436,7 +1463,7 @@ private fun ReportsTopTabBar(
 ) {
     val ext = LocalSereneColors.current
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val compact = maxWidth < 370.dp
+        val compact = maxWidth < 420.dp
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1455,9 +1482,9 @@ private fun ReportsTopTabBar(
             ) {
                 ReportsTopTabButton(
                     modifier = Modifier.weight(1f),
-                    label = if (compact) tr(isArabic, "التقارير", "Reports") else tr(isArabic, "التقارير والفلاتر", "Reports & Filters"),
+                    label = tr(isArabic, "التقارير", "Reports"),
                     icon = Icons.Outlined.Tune,
-                    badgeText = "$matchingCount",
+                    badgeText = if (compact) null else "$matchingCount",
                     showLiveDot = false,
                     selected = activeTab == ReportsTopTab.REPORTS,
                     compact = compact,
@@ -1466,7 +1493,7 @@ private fun ReportsTopTabBar(
                 )
                 ReportsTopTabButton(
                     modifier = Modifier.weight(1f),
-                    label = if (compact) tr(isArabic, "التحليل", "Dashboard") else tr(isArabic, "داشبورد التحليل", "Analytics Dashboard"),
+                    label = tr(isArabic, "التحليل", "Analytics"),
                     icon = Icons.Outlined.Insights,
                     badgeText = null,
                     showLiveDot = hasActiveFilters,
@@ -1474,6 +1501,17 @@ private fun ReportsTopTabBar(
                     compact = compact,
                     tag = "reports_top_tab_dashboard",
                     onClick = { onSelectTab(ReportsTopTab.DASHBOARD) }
+                )
+                ReportsTopTabButton(
+                    modifier = Modifier.weight(1f),
+                    label = tr(isArabic, "المخطط", "Plan"),
+                    icon = Icons.Outlined.AccountTree,
+                    badgeText = null,
+                    showLiveDot = false,
+                    selected = activeTab == ReportsTopTab.PLAN,
+                    compact = compact,
+                    tag = "reports_top_tab_plan",
+                    onClick = { onSelectTab(ReportsTopTab.PLAN) }
                 )
             }
         }
@@ -1516,7 +1554,7 @@ private fun ReportsTopTabButton(
         color = bgColor
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = if (compact) 6.dp else 10.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = if (compact) 4.dp else 8.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -1524,7 +1562,7 @@ private fun ReportsTopTabButton(
                 imageVector = icon,
                 contentDescription = label,
                 tint = iconColor,
-                modifier = Modifier.size(if (compact) 16.dp else 18.dp)
+                modifier = Modifier.size(if (compact) 15.dp else 17.dp)
             )
             Spacer(modifier = Modifier.width(if (compact) 4.dp else 6.dp))
             Text(
@@ -1580,12 +1618,40 @@ private fun ReportsQuickDetailsStrip(
     paidCount: Int,
     currencySymbol: String,
     isArabic: Boolean,
+    filter: ReportFilterState = ReportFilterState(),
+    contextualOnly: Boolean = true,
     onOpenIncomeDetails: () -> Unit,
     onOpenExpenseDetails: () -> Unit,
     onOpenDebts: () -> Unit,
-    onOpenPayments: () -> Unit
+    onOpenPayments: () -> Unit,
+    onOpenMoneyFlowGuide: () -> Unit
 ) {
     val ext = LocalSereneColors.current
+    val isIncomeFocused = contextualOnly && (
+        filter.type == TransactionType.INCOME ||
+            filter.debtFilter == DebtFilter.DEBT_INCOME ||
+            filter.debtFilter == DebtFilter.PAYMENTS_INCOME
+        )
+    val isExpenseFocused = contextualOnly && (
+        filter.type == TransactionType.EXPENSE ||
+            filter.debtFilter == DebtFilter.DEBT_EXPENSE ||
+            filter.debtFilter == DebtFilter.PAYMENTS_EXPENSE
+        )
+    val isUpcomingFocused = contextualOnly && (
+        filter.debtFilter == DebtFilter.DEBT_UNPAID ||
+            filter.debtFilter == DebtFilter.DEBT_INCOME ||
+            filter.debtFilter == DebtFilter.DEBT_EXPENSE
+        )
+    val isSettledFocused = contextualOnly && (
+        filter.debtFilter == DebtFilter.DEBT_SETTLED ||
+            filter.debtFilter == DebtFilter.PAYMENTS_INCOME ||
+            filter.debtFilter == DebtFilter.PAYMENTS_EXPENSE
+        )
+    val showIncomeTile = !isExpenseFocused && !isUpcomingFocused && !isSettledFocused || isIncomeFocused
+    val showExpenseTile = !isIncomeFocused && !isUpcomingFocused && !isSettledFocused || isExpenseFocused
+    val showUpcomingTile = !isSettledFocused && !(contextualOnly && filter.debtFilter == DebtFilter.NON_DEBT)
+    val showPaidTile = !isUpcomingFocused
+
     SereneCard(contentPadding = PaddingValues(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1600,67 +1666,158 @@ private fun ReportsQuickDetailsStrip(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = tr(isArabic, "اضغط للعرض الكامل", "Tap for full view"),
+                text = if (contextualOnly && (isIncomeFocused || isExpenseFocused || isUpcomingFocused || isSettledFocused)) {
+                    tr(isArabic, "مرتبطة بالفلتر المختار", "Filtered view")
+                } else {
+                    tr(isArabic, "اضغط للعرض الكامل", "Tap for full view")
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1
             )
         }
         Spacer(modifier = Modifier.height(8.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Featured Icon Card: «شرح تفصيلي بفلوس راحت فين وجات إزاي»
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .testTag("reports_open_money_flow_guide")
+                .clickable(onClick = onOpenMoneyFlowGuide),
+            shape = RoundedCornerShape(14.dp),
+            color = ext.heroCardBackground,
+            border = BorderStroke(1.dp, Color(0xFF82F5C1).copy(alpha = 0.4f))
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                ReportsQuickDetailTile(
-                    modifier = Modifier.weight(1f),
-                    title = tr(isArabic, "تفاصيل الدخل", "Income"),
-                    amount = "${formatAmountMinor(totalIncomeMinor, false)} $currencySymbol",
-                    badge = null,
-                    icon = Icons.Outlined.TrendingUp,
-                    accentColor = ext.incomeColor,
-                    accentBg = ext.incomeContainer,
-                    tag = "reports_open_income_details",
-                    onClick = onOpenIncomeDetails
-                )
-                ReportsQuickDetailTile(
-                    modifier = Modifier.weight(1f),
-                    title = tr(isArabic, "تفاصيل المصاريف", "Expenses"),
-                    amount = "${formatAmountMinor(totalExpenseMinor, false)} $currencySymbol",
-                    badge = null,
-                    icon = Icons.Outlined.TrendingDown,
-                    accentColor = ext.expenseColor,
-                    accentBg = ext.expenseContainer,
-                    tag = "reports_open_expense_details",
-                    onClick = onOpenExpenseDetails
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(ext.incomeColor.copy(alpha = 0.22f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.AccountTree,
+                            contentDescription = tr(
+                                isArabic,
+                                "شرح تفصيلي بفلوس راحت فين وجات إزاي",
+                                "Detailed Money Flow Explanation"
+                            ),
+                            tint = Color(0xFF82F5C1),
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = tr(
+                                isArabic,
+                                "شرح تفصيلي بفلوس راحت فين وجات إزاي",
+                                "Detailed Guide: Where Money Went & Came From"
+                            ),
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = ext.heroCardOnBackground,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = tr(
+                                isArabic,
+                                "يشمل «الفلوس اللي دخلت لك من يوم ما استخدمت البرنامج» و«فلوسك بعد حساب كل المبالغ المطلوب دفعها»",
+                                "Includes Lifetime Money Added & Money After All Due Payments"
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ext.heroCardSubtext,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = Color(0xFF82F5C1),
+                    modifier = Modifier.size(20.dp)
                 )
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                ReportsQuickDetailTile(
-                    modifier = Modifier.weight(1f),
-                    title = tr(isArabic, "المديونيات", "Debts"),
-                    amount = "${formatAmountMinor(totalUnpaidDebtMinor, false)} $currencySymbol",
-                    badge = tr(isArabic, "$unpaidDebtCount قائمة", "$unpaidDebtCount active"),
-                    icon = Icons.Outlined.RequestQuote,
-                    accentColor = ext.warningAmber,
-                    accentBg = ext.warningAmber.copy(alpha = 0.16f),
-                    tag = "reports_open_debts_details",
-                    onClick = onOpenDebts
-                )
-                ReportsQuickDetailTile(
-                    modifier = Modifier.weight(1f),
-                    title = tr(isArabic, "المدفوعات", "Payments"),
-                    amount = "${formatAmountMinor(totalPaidMinor, false)} $currencySymbol",
-                    badge = tr(isArabic, "$paidCount مسددة", "$paidCount paid"),
-                    icon = Icons.Outlined.Payments,
-                    accentColor = ext.incomeColor,
-                    accentBg = ext.incomeContainer,
-                    tag = "reports_open_payments_details",
-                    onClick = onOpenPayments
-                )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (showIncomeTile || showExpenseTile) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (showIncomeTile) {
+                        ReportsQuickDetailTile(
+                            modifier = Modifier.weight(1f),
+                            title = tr(isArabic, "تفاصيل الدخل", "Income"),
+                            amount = "${formatAmountMinor(totalIncomeMinor, false)} $currencySymbol",
+                            badge = null,
+                            icon = Icons.Outlined.TrendingUp,
+                            accentColor = ext.incomeColor,
+                            accentBg = ext.incomeContainer,
+                            tag = "reports_open_income_details",
+                            onClick = onOpenIncomeDetails
+                        )
+                    }
+                    if (showExpenseTile) {
+                        ReportsQuickDetailTile(
+                            modifier = Modifier.weight(1f),
+                            title = tr(isArabic, "تفاصيل المصاريف", "Expenses"),
+                            amount = "${formatAmountMinor(totalExpenseMinor, false)} $currencySymbol",
+                            badge = null,
+                            icon = Icons.Outlined.TrendingDown,
+                            accentColor = ext.expenseColor,
+                            accentBg = ext.expenseContainer,
+                            tag = "reports_open_expense_details",
+                            onClick = onOpenExpenseDetails
+                        )
+                    }
+                }
+            }
+            if (showUpcomingTile || showPaidTile) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (showUpcomingTile) {
+                        ReportsQuickDetailTile(
+                            modifier = Modifier.weight(1f),
+                            title = tr(isArabic, "كل المطلوب دفعه قريباً", "Upcoming Due"),
+                            amount = "${formatAmountMinor(totalUnpaidDebtMinor, false)} $currencySymbol",
+                            badge = tr(isArabic, "$unpaidDebtCount لسه هيندفع", "$unpaidDebtCount due"),
+                            icon = Icons.Outlined.RequestQuote,
+                            accentColor = ext.warningAmber,
+                            accentBg = ext.warningAmber.copy(alpha = 0.16f),
+                            tag = "reports_open_debts_details",
+                            onClick = onOpenDebts
+                        )
+                    }
+                    if (showPaidTile) {
+                        ReportsQuickDetailTile(
+                            modifier = Modifier.weight(1f),
+                            title = tr(isArabic, "كل اللي اندفع بالفعل", "Actually Paid"),
+                            amount = "${formatAmountMinor(totalPaidMinor, false)} $currencySymbol",
+                            badge = tr(isArabic, "$paidCount مدفوعة", "$paidCount paid"),
+                            icon = Icons.Outlined.Payments,
+                            accentColor = ext.incomeColor,
+                            accentBg = ext.incomeContainer,
+                            tag = "reports_open_payments_details",
+                            onClick = onOpenPayments
+                        )
+                    }
+                }
             }
         }
     }

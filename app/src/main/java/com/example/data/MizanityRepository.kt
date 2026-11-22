@@ -11,8 +11,10 @@ class MizanityRepository(private val db: AppDatabase) {
     private val accDao = db.accountDao()
     private val filterDao = db.savedFilterDao()
     private val settingsDao = db.settingsDao()
+    private val obligationDao = db.obligationDao()
 
     val transactions: Flow<List<TransactionEntity>> = txDao.observeAll()
+    val obligations: Flow<List<ObligationEntity>> = obligationDao.observeAll()
     val categories: Flow<List<CategoryEntity>> = catDao.observeAll()
     val accounts: Flow<List<AccountEntity>> = accDao.observeAll()
     val savedFilters: Flow<List<SavedFilterEntity>> = filterDao.observeAll()
@@ -68,7 +70,20 @@ class MizanityRepository(private val db: AppDatabase) {
     }
 
     suspend fun updateTransaction(tx: TransactionEntity) = txDao.update(tx)
+    suspend fun getTransactionByIdOnce(id: Long): TransactionEntity? = txDao.getByIdOnce(id)
     suspend fun setDebtSettled(id: Long, settled: Boolean) = txDao.setDebtSettled(id, settled)
+    suspend fun setReminderMuted(id: Long, muted: Boolean) = txDao.setReminderMuted(id, muted)
+    suspend fun updateTransactionReminderSettings(
+        id: Long,
+        enabled: Boolean,
+        dueDate: String,
+        dueTime: String,
+        leadMinutes: Int,
+        muted: Boolean,
+        alertMode: String,
+        fullScreen: Boolean,
+        speakAloud: Boolean
+    ) = txDao.updateReminderSettings(id, enabled, dueDate, dueTime, leadMinutes, muted, alertMode, fullScreen, speakAloud)
     suspend fun deleteTransaction(id: Long) = txDao.deleteById(id)
     suspend fun deleteTransactions(ids: List<Long>) = txDao.deleteByIds(ids)
     suspend fun deleteTransactionsInRange(startDate: String, endDate: String) =
@@ -80,7 +95,71 @@ class MizanityRepository(private val db: AppDatabase) {
     suspend fun deleteTransactionsByCategory(category: String) =
         txDao.deleteByCategory(category)
 
+    suspend fun deleteTransactionsBySource(source: String) =
+        txDao.deleteBySource(source)
+
+    suspend fun deleteTransactionsByType(type: String) =
+        txDao.deleteByType(type)
+
+    suspend fun deleteEarnedIncomeOnly() =
+        txDao.deleteEarnedIncomeOnly()
+
+    suspend fun deleteUnpaidIncomeDebts() =
+        txDao.deleteUnpaidIncomeDebts()
+
+    suspend fun deleteSettledIncomeDebts() =
+        txDao.deleteSettledIncomeDebts()
+
+    suspend fun deletePaidExpensesOnly() =
+        txDao.deletePaidExpensesOnly()
+
+    suspend fun deleteUnpaidExpenseDebts() =
+        txDao.deleteUnpaidExpenseDebts()
+
+    suspend fun deleteSettledExpenseDebts() =
+        txDao.deleteSettledExpenseDebts()
+
+    suspend fun deleteUnpaidDebts() =
+        txDao.deleteUnpaidDebts()
+
+    suspend fun deleteSettledDebts() =
+        txDao.deleteSettledDebts()
+
     suspend fun wipeAllTransactions() = txDao.deleteAll()
+
+    // --- Scheduled Obligations Due to Pay («مبالغ مطلوب دفعها») ---
+    suspend fun addObligation(obligation: ObligationEntity): Long = obligationDao.insert(obligation)
+    suspend fun getObligationByIdOnce(id: Long): ObligationEntity? = obligationDao.getByIdOnce(id)
+    suspend fun getAllObligationsOnce(): List<ObligationEntity> = obligationDao.getAllOnce()
+    suspend fun setObligationPaid(id: Long, paid: Boolean, paidDate: String, paidSource: String) =
+        obligationDao.setPaidStatus(id, paid, paidDate, paidSource)
+    suspend fun setObligationReminderMuted(id: Long, muted: Boolean) =
+        obligationDao.setReminderMuted(id, muted)
+    suspend fun updateObligationReminderSettings(
+        id: Long,
+        enabled: Boolean,
+        dueDate: String,
+        dueTime: String,
+        leadMinutes: Int,
+        muted: Boolean,
+        alertMode: String,
+        fullScreen: Boolean,
+        speakAloud: Boolean
+    ) = obligationDao.updateReminderSettings(id, enabled, dueDate, dueTime, leadMinutes, muted, alertMode, fullScreen, speakAloud)
+    suspend fun deleteObligation(id: Long) = obligationDao.deleteById(id)
+    suspend fun deletePendingObligationsOnly() = obligationDao.deletePendingOnly()
+    suspend fun deletePaidObligationsOnly() = obligationDao.deletePaidOnly()
+    suspend fun wipeAllObligations() = obligationDao.deleteAll()
+
+    suspend fun clearUnscheduledTransactionDueDates() = txDao.clearUnscheduledDueDates()
+    suspend fun clearAllDebtTransactionReminders() = txDao.clearAllDebtTransactionReminders()
+    suspend fun unifyScheduledReminderTimes(newTime24: String, includeScheduledTransactions: Boolean = true) {
+        val cleanTime = newTime24.trim().ifBlank { "09:00" }
+        obligationDao.unifyPendingObligationDueTime(cleanTime)
+        if (includeScheduledTransactions) {
+            txDao.unifyScheduledTransactionDueTime(cleanTime)
+        }
+    }
 
     suspend fun addCategory(name: String, iconKey: String, kind: String) {
         catDao.insert(CategoryEntity(name = name.trim(), iconKey = iconKey, kind = kind))
@@ -138,6 +217,14 @@ class MizanityRepository(private val db: AppDatabase) {
                 put("isDebtSettled", tx.isDebtSettled)
                 put("itemName", tx.itemName)
                 put("debtParty", tx.debtParty)
+                put("hasPaymentReminder", tx.hasPaymentReminder)
+                put("paymentDueDate", tx.paymentDueDate)
+                put("paymentDueTime", tx.paymentDueTime)
+                put("reminderLeadMinutes", tx.reminderLeadMinutes)
+                put("reminderMuted", tx.reminderMuted)
+                put("reminderAlertMode", tx.reminderAlertMode)
+                put("reminderFullScreen", tx.reminderFullScreen)
+                put("reminderSpeakAloud", tx.reminderSpeakAloud)
             })
         }
         root.put("transactions", txArr)
@@ -173,6 +260,30 @@ class MizanityRepository(private val db: AppDatabase) {
         }
         root.put("savedFilters", filterArr)
 
+        val obArr = JSONArray()
+        obligationDao.getAllOnce().forEach { ob ->
+            obArr.put(JSONObject().apply {
+                put("amountMinor", ob.amountMinor)
+                put("currency", ob.currency)
+                put("reason", ob.reason)
+                put("party", ob.party)
+                put("dueDate", ob.dueDate)
+                put("dueTime", ob.dueTime)
+                put("reminderEnabled", ob.reminderEnabled)
+                put("reminderLeadMinutes", ob.reminderLeadMinutes)
+                put("reminderMuted", ob.reminderMuted)
+                put("isPaid", ob.isPaid)
+                put("paidDate", ob.paidDate)
+                put("paidSource", ob.paidSource)
+                put("note", ob.note)
+                put("createdAt", ob.createdAt)
+                put("reminderAlertMode", ob.reminderAlertMode)
+                put("reminderFullScreen", ob.reminderFullScreen)
+                put("reminderSpeakAloud", ob.reminderSpeakAloud)
+            })
+        }
+        root.put("obligations", obArr)
+
         val s = settingsDao.getSettingsOnce() ?: AppSettingsEntity()
         root.put("settings", JSONObject().apply {
             put("defaultCurrency", s.defaultCurrency)
@@ -183,6 +294,17 @@ class MizanityRepository(private val db: AppDatabase) {
             put("dailyReminderTime", s.dailyReminderTime)
             put("monthlyBudgetLimitMinor", s.monthlyBudgetLimitMinor)
             put("lastSelectedSource", s.lastSelectedSource)
+            put("notificationsEnabled", s.notificationsEnabled)
+            put("customGreetingText", s.customGreetingText)
+            put("customMorningGreeting", s.customMorningGreeting)
+            put("customEveningGreeting", s.customEveningGreeting)
+            put("showBaseGreeting", s.showBaseGreeting)
+            put("showCustomGreeting", s.showCustomGreeting)
+            put("transactionsViewMode", s.transactionsViewMode)
+            put("defaultAlertMode", s.defaultAlertMode)
+            put("fullScreenAlertsEnabled", s.fullScreenAlertsEnabled)
+            put("speakRemindersAloud", s.speakRemindersAloud)
+            put("ringtoneAlertsEnabled", s.ringtoneAlertsEnabled)
         })
 
         return root.toString(2)
@@ -208,7 +330,15 @@ class MizanityRepository(private val db: AppDatabase) {
                     isDebt = o.optBoolean("isDebt", false),
                     isDebtSettled = o.optBoolean("isDebtSettled", false),
                     itemName = o.optString("itemName", ""),
-                    debtParty = o.optString("debtParty", "")
+                    debtParty = o.optString("debtParty", ""),
+                    hasPaymentReminder = o.optBoolean("hasPaymentReminder", false),
+                    paymentDueDate = o.optString("paymentDueDate", ""),
+                    paymentDueTime = o.optString("paymentDueTime", ""),
+                    reminderLeadMinutes = o.optInt("reminderLeadMinutes", 60),
+                    reminderMuted = o.optBoolean("reminderMuted", false),
+                    reminderAlertMode = o.optString("reminderAlertMode", ReminderAlertMode.NOTIFICATION_RING),
+                    reminderFullScreen = o.optBoolean("reminderFullScreen", true),
+                    reminderSpeakAloud = o.optBoolean("reminderSpeakAloud", false)
                 )
             )
         }
@@ -270,6 +400,37 @@ class MizanityRepository(private val db: AppDatabase) {
             if (filters.isNotEmpty()) filterDao.insertAll(filters)
         }
 
+        val obArr = root.optJSONArray("obligations")
+        if (obArr != null) {
+            obligationDao.deleteAll()
+            val obs = mutableListOf<ObligationEntity>()
+            for (i in 0 until obArr.length()) {
+                val o = obArr.getJSONObject(i)
+                obs.add(
+                    ObligationEntity(
+                        amountMinor = o.optLong("amountMinor", 0L).coerceAtLeast(0L),
+                        currency = o.optString("currency", "EGP"),
+                        reason = o.optString("reason", ""),
+                        party = o.optString("party", ""),
+                        dueDate = o.optString("dueDate", "2026-01-01"),
+                        dueTime = o.optString("dueTime", "09:00"),
+                        reminderEnabled = o.optBoolean("reminderEnabled", true),
+                        reminderLeadMinutes = o.optInt("reminderLeadMinutes", 60),
+                        reminderMuted = o.optBoolean("reminderMuted", false),
+                        isPaid = o.optBoolean("isPaid", false),
+                        paidDate = o.optString("paidDate", ""),
+                        paidSource = o.optString("paidSource", "كاش / نقدي"),
+                        note = o.optString("note", ""),
+                        createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+                        reminderAlertMode = o.optString("reminderAlertMode", ReminderAlertMode.NOTIFICATION_RING),
+                        reminderFullScreen = o.optBoolean("reminderFullScreen", true),
+                        reminderSpeakAloud = o.optBoolean("reminderSpeakAloud", false)
+                    )
+                )
+            }
+            if (obs.isNotEmpty()) obligationDao.insertAll(obs)
+        }
+
         val sObj = root.optJSONObject("settings")
         if (sObj != null) {
             val current = settingsDao.getSettingsOnce() ?: AppSettingsEntity()
@@ -282,7 +443,18 @@ class MizanityRepository(private val db: AppDatabase) {
                     dailyReminderEnabled = sObj.optBoolean("dailyReminderEnabled", current.dailyReminderEnabled),
                     dailyReminderTime = sObj.optString("dailyReminderTime", current.dailyReminderTime),
                     monthlyBudgetLimitMinor = sObj.optLong("monthlyBudgetLimitMinor", current.monthlyBudgetLimitMinor),
-                    lastSelectedSource = sObj.optString("lastSelectedSource", current.lastSelectedSource)
+                    lastSelectedSource = sObj.optString("lastSelectedSource", current.lastSelectedSource),
+                    notificationsEnabled = sObj.optBoolean("notificationsEnabled", current.notificationsEnabled),
+                    customGreetingText = sObj.optString("customGreetingText", current.customGreetingText),
+                    customMorningGreeting = sObj.optString("customMorningGreeting", current.customMorningGreeting),
+                    customEveningGreeting = sObj.optString("customEveningGreeting", current.customEveningGreeting),
+                    showBaseGreeting = sObj.optBoolean("showBaseGreeting", current.showBaseGreeting),
+                    showCustomGreeting = sObj.optBoolean("showCustomGreeting", current.showCustomGreeting),
+                    transactionsViewMode = sObj.optString("transactionsViewMode", current.transactionsViewMode),
+                    defaultAlertMode = sObj.optString("defaultAlertMode", current.defaultAlertMode),
+                    fullScreenAlertsEnabled = sObj.optBoolean("fullScreenAlertsEnabled", current.fullScreenAlertsEnabled),
+                    speakRemindersAloud = sObj.optBoolean("speakRemindersAloud", current.speakRemindersAloud),
+                    ringtoneAlertsEnabled = sObj.optBoolean("ringtoneAlertsEnabled", current.ringtoneAlertsEnabled)
                 )
             )
         }

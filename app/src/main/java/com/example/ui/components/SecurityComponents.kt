@@ -306,10 +306,13 @@ fun AppLockGateScreen(
     val ext = LocalSereneColors.current
     val context = LocalContext.current
 
+    val isDevicePatternMode = settings.patternMode == "device"
     val availableTabs = remember(settings) {
         buildList {
             if (settings.biometricEnabled) add(AuthTab.BIOMETRIC)
-            if (settings.patternEnabled && settings.patternCode.isNotBlank()) add(AuthTab.PATTERN)
+            if (settings.patternEnabled && (settings.patternMode == "device" || settings.patternCode.isNotBlank())) {
+                add(AuthTab.PATTERN)
+            }
             if (settings.pinEnabled && settings.pinCode.length >= 4) add(AuthTab.PIN)
         }
     }
@@ -324,17 +327,19 @@ fun AppLockGateScreen(
         if (availableTabs.isEmpty()) onUnlocked()
     }
 
-    // Auto-trigger Biometric / Device Credential prompt on launch after window settles
-    LaunchedEffect(activeTab) {
-        if (activeTab == AuthTab.BIOMETRIC && settings.biometricEnabled) {
+    // Auto-trigger Biometric / Device Pattern prompt on launch after window settles
+    LaunchedEffect(activeTab, isDevicePatternMode) {
+        val shouldTriggerDevicePrompt = (activeTab == AuthTab.BIOMETRIC && settings.biometricEnabled) ||
+            (activeTab == AuthTab.PATTERN && settings.patternEnabled && isDevicePatternMode)
+        if (shouldTriggerDevicePrompt) {
             kotlinx.coroutines.delay(180L)
             launchDeviceBiometricOrCredentialPrompt(
                 context = context,
                 title = tr(isArabic, "فتح تطبيق مصروفي", "Unlock Masrofy"),
                 subtitle = tr(
                     isArabic,
-                    "تحقق بالبصمة أو نمط / قفل الجهاز للمتابعة",
-                    "Verify with fingerprint or device pattern/lock"
+                    if (activeTab == AuthTab.PATTERN) "ارسم نمط الجهاز الافتراضي للمتابعة" else "تحقق بالبصمة أو نمط / قفل الجهاز للمتابعة",
+                    if (activeTab == AuthTab.PATTERN) "Use your device's default pattern/lock" else "Verify with fingerprint or device pattern/lock"
                 ),
                 isArabic = isArabic,
                 onSuccess = onUnlocked,
@@ -473,18 +478,54 @@ fun AppLockGateScreen(
                     }
 
                     AuthTab.PATTERN -> {
-                        PatternLockGrid(
-                            modifier = Modifier.size(230.dp),
-                            isError = errorMsg != null,
-                            onPatternComplete = { drawn ->
-                                if (drawn == settings.patternCode) {
+                        if (isDevicePatternMode) {
+                            Button(
+                                onClick = {
                                     errorMsg = null
-                                    onUnlocked()
-                                } else {
-                                    errorMsg = tr(isArabic, "النمط غير صحيح، حاول مرة أخرى", "Incorrect pattern, try again")
-                                }
+                                    launchDeviceBiometricOrCredentialPrompt(
+                                        context = context,
+                                        title = tr(isArabic, "فتح بنمط الجهاز الافتراضي", "Unlock with Device Pattern"),
+                                        subtitle = tr(
+                                            isArabic,
+                                            "استخدم نمط أو قفل شاشة الهاتف الافتراضي",
+                                            "Use your phone's default pattern or screen lock"
+                                        ),
+                                        isArabic = isArabic,
+                                        onSuccess = onUnlocked,
+                                        onFailure = { msg -> errorMsg = msg }
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 50.dp)
+                                    .testTag("lock_device_pattern_btn"),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ext.heroCardBackground,
+                                    contentColor = ext.heroCardOnBackground
+                                )
+                            ) {
+                                Icon(Icons.Outlined.Pattern, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = tr(isArabic, "فتح بنمط الجهاز الافتراضي", "Unlock with Device Pattern"),
+                                    style = MaterialTheme.typography.labelLarge
+                                )
                             }
-                        )
+                        } else {
+                            PatternLockGrid(
+                                modifier = Modifier.size(230.dp),
+                                isError = errorMsg != null,
+                                onPatternComplete = { drawn ->
+                                    if (drawn == settings.patternCode) {
+                                        errorMsg = null
+                                        onUnlocked()
+                                    } else {
+                                        errorMsg = tr(isArabic, "النمط غير صحيح، حاول مرة أخرى", "Incorrect pattern, try again")
+                                    }
+                                }
+                            )
+                        }
                     }
 
                     AuthTab.PIN -> {
@@ -560,10 +601,13 @@ fun SecurityVerificationDialog(
     val context = LocalContext.current
 
     val effectiveSecurity = requireSecurity && settings.hasAnyLockMethodConfigured()
+    val isDevicePatternMode = settings.patternMode == "device"
     val availableTabs = remember(settings) {
         buildList {
             if (settings.biometricEnabled) add(AuthTab.BIOMETRIC)
-            if (settings.patternEnabled && settings.patternCode.isNotBlank()) add(AuthTab.PATTERN)
+            if (settings.patternEnabled && (settings.patternMode == "device" || settings.patternCode.isNotBlank())) {
+                add(AuthTab.PATTERN)
+            }
             if (settings.pinEnabled && settings.pinCode.length >= 4) add(AuthTab.PIN)
         }
     }
@@ -677,18 +721,52 @@ fun SecurityVerificationDialog(
                         }
 
                         AuthTab.PATTERN -> {
-                            PatternLockGrid(
-                                modifier = Modifier.size(210.dp),
-                                isError = errorMsg != null,
-                                onPatternComplete = { drawn ->
-                                    if (drawn == settings.patternCode) {
+                            if (isDevicePatternMode) {
+                                OutlinedButton(
+                                    onClick = {
                                         errorMsg = null
-                                        onConfirmed()
-                                    } else {
-                                        errorMsg = tr(isArabic, "النمط غير صحيح", "Incorrect pattern")
-                                    }
+                                        launchDeviceBiometricOrCredentialPrompt(
+                                            context = context,
+                                            title = title,
+                                            subtitle = tr(
+                                                isArabic,
+                                                "أكّد بنمط أو قفل الجهاز الافتراضي لإتمام العملية",
+                                                "Verify with default device pattern/lock to proceed"
+                                            ),
+                                            isArabic = isArabic,
+                                            onSuccess = onConfirmed,
+                                            onFailure = { msg -> errorMsg = msg }
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .testTag("dialog_device_pattern_btn"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.2.dp, accent)
+                                ) {
+                                    Icon(Icons.Outlined.Pattern, contentDescription = null, tint = accent)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = tr(isArabic, "تأكيد بنمط الجهاز الافتراضي", "Verify with Device Pattern"),
+                                        color = accent,
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                    )
                                 }
-                            )
+                            } else {
+                                PatternLockGrid(
+                                    modifier = Modifier.size(210.dp),
+                                    isError = errorMsg != null,
+                                    onPatternComplete = { drawn ->
+                                        if (drawn == settings.patternCode) {
+                                            errorMsg = null
+                                            onConfirmed()
+                                        } else {
+                                            errorMsg = tr(isArabic, "النمط غير صحيح", "Incorrect pattern")
+                                        }
+                                    }
+                                )
+                            }
                         }
 
                         AuthTab.PIN -> {

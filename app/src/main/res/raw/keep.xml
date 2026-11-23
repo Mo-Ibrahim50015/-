@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/splash_intro,@drawable/masrofy_launcher_icon,@drawable/ic_launcher_foreground,@drawable/ic_launcher_background,@drawable/widget_bg,@drawable/widget_pill_green,@drawable/widget_pill_amber,@xml/shortcuts,@xml/masrofy_widget_info,@xml/file_paths"
+    tools:shrinkMode="safe" />

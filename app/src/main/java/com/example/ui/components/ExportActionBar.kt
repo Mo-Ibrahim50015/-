@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -13,12 +15,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PictureAsPdf
@@ -31,6 +37,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -62,8 +70,9 @@ import kotlinx.coroutines.withContext
 
 /**
  * Reusable compact Export & Download trigger bar for EVERY page in Masrofy.
- * Generates cleanly formatted PDF, Excel (.xls), CSV, or PNG files on Dispatchers.IO,
- * saves directly into Downloads/Masrofy (or Pictures/Masrofy), AND provides 1-tap Open & Share!
+ * Generates cleanly formatted PDF, Excel (.xls), CSV, or PNG files on Dispatchers.IO
+ * named after the report/filter subject, saves directly into Downloads/Masrofy (or Pictures/Masrofy),
+ * AND provides 1-tap Open, Share, and direct Google Drive / SAF Upload!
  */
 @Composable
 fun ExportDownloadButton(
@@ -105,9 +114,9 @@ fun ExportDownloadButton(
             )
             Text(
                 text = if (compactLabel) {
-                    tr(isArabic, "تصدير / تنزيل", "Export")
+                    tr(isArabic, "تصدير / درايف", "Export / Drive")
                 } else {
-                    tr(isArabic, "تصدير وتنزيل الملف (PDF / Excel / CSV / صورة)", "Export & Download (PDF / Excel / CSV / Image)")
+                    tr(isArabic, "تصدير / رفع على جوجل درايف (PDF / Excel / CSV / صورة)", "Export / Upload to Drive (PDF / Excel / CSV / Image)")
                 },
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                 color = ext.incomeColor,
@@ -144,9 +153,54 @@ fun UniversalExportDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    val defaultFileStem = remember(reportTitle, filterSummary, isArabic) {
+        ExportManager.buildSmartFileName(
+            reportTitle = reportTitle,
+            filterSummary = filterSummary,
+            extension = "",
+            isArabic = isArabic
+        )
+    }
+    var customFileName by remember(defaultFileStem) { mutableStateOf(defaultFileStem) }
     var isExporting by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+    var driveSavedMsg by remember { mutableStateOf<String?>(null) }
     var lastOutcome by remember { mutableStateOf<ExportOutcome?>(null) }
+
+    fun writeOutcomeToSafUri(uri: android.net.Uri?) {
+        val outcome = lastOutcome ?: return
+        if (uri == null) return
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                ExportManager.writeFileToUri(context, outcome.file, uri)
+            }
+            if (ok) {
+                driveSavedMsg = tr(
+                    isArabic,
+                    "تم الرفع / الحفظ بنجاح باسم: ${outcome.fileName} ✓",
+                    "Uploaded / Saved as: ${outcome.fileName} ✓"
+                )
+            } else {
+                errorMsg = tr(isArabic, "تعذر الحفظ في المكان المختار", "Failed to save to chosen location")
+            }
+        }
+    }
+
+    val createPdfDriveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf")
+    ) { uri -> writeOutcomeToSafUri(uri) }
+
+    val createExcelDriveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/vnd.ms-excel")
+    ) { uri -> writeOutcomeToSafUri(uri) }
+
+    val createCsvDriveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri -> writeOutcomeToSafUri(uri) }
+
+    val createImageDriveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("image/png")
+    ) { uri -> writeOutcomeToSafUri(uri) }
 
     val totalCount = transactions.size + obligations.size
 
@@ -156,7 +210,9 @@ fun UniversalExportDialog(
             return
         }
         errorMsg = null
+        driveSavedMsg = null
         isExporting = true
+        val chosenName = customFileName.trim()
         scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
@@ -169,7 +225,8 @@ fun UniversalExportDialog(
                                 preferredCurrency = preferredCurrency,
                                 reportTitle = reportTitle,
                                 filterSummary = filterSummary,
-                                isArabic = isArabic
+                                isArabic = isArabic,
+                                customFileName = chosenName
                             )
                             val saved = ExportManager.saveToDeviceDownloads(context, file, "application/pdf", false, isArabic)
                             ExportOutcome(file, saved, "application/pdf", file.name)
@@ -180,7 +237,9 @@ fun UniversalExportDialog(
                                 transactions = transactions,
                                 isArabic = isArabic,
                                 reportTitle = reportTitle,
-                                obligations = obligations
+                                obligations = obligations,
+                                filterSummary = filterSummary,
+                                customFileName = chosenName
                             )
                             val saved = ExportManager.saveToDeviceDownloads(context, file, "application/vnd.ms-excel", false, isArabic)
                             ExportOutcome(file, saved, "application/vnd.ms-excel", file.name)
@@ -191,7 +250,9 @@ fun UniversalExportDialog(
                                 transactions = transactions,
                                 isArabic = isArabic,
                                 reportTitle = reportTitle,
-                                obligations = obligations
+                                obligations = obligations,
+                                filterSummary = filterSummary,
+                                customFileName = chosenName
                             )
                             val saved = ExportManager.saveToDeviceDownloads(context, file, "text/csv", false, isArabic)
                             ExportOutcome(file, saved, "text/csv", file.name)
@@ -204,7 +265,8 @@ fun UniversalExportDialog(
                                 preferredCurrency = preferredCurrency,
                                 reportTitle = reportTitle,
                                 filterSummary = filterSummary,
-                                isArabic = isArabic
+                                isArabic = isArabic,
+                                customFileName = chosenName
                             )
                             val saved = ExportManager.saveToDeviceDownloads(context, file, "image/png", true, isArabic)
                             ExportOutcome(file, saved, "image/png", file.name)
@@ -237,6 +299,7 @@ fun UniversalExportDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -247,7 +310,7 @@ fun UniversalExportDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = tr(isArabic, "تصدير وتنزيل منسق", "Formatted Export & Download"),
+                            text = tr(isArabic, "تصدير وتنزيل ورفع على جوجل درايف", "Export, Download & Upload to Drive"),
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
@@ -262,6 +325,52 @@ fun UniversalExportDialog(
                         Icon(Icons.Outlined.Close, contentDescription = tr(isArabic, "إغلاق", "Close"), modifier = Modifier.size(18.dp))
                     }
                 }
+
+                if (filterSummary.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = ext.cardSubtleBackground,
+                        border = BorderStroke(1.dp, ext.cardBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "${tr(isArabic, "نطاق البيانات المُصدَّرة:", "Export Scope:")} $filterSummary",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                        )
+                    }
+                }
+
+                // Editable smart file name (used for Downloads, Share, and Google Drive)
+                OutlinedTextField(
+                    value = customFileName,
+                    onValueChange = { customFileName = it },
+                    singleLine = true,
+                    label = {
+                        Text(
+                            text = tr(isArabic, "اسم الملف (للحفظ والرفع على جوجل درايف)", "File Name (Device & Google Drive)"),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Outlined.DriveFileRenameOutline,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = ext.cardSubtleBackground,
+                        unfocusedContainerColor = ext.cardSubtleBackground
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("export_file_name_input")
+                )
 
                 // 4 Formatted Export Choices (2x2 Grid)
                 Row(
@@ -366,7 +475,7 @@ fun UniversalExportDialog(
                             ) {
                                 Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = ext.incomeColor, modifier = Modifier.size(18.dp))
                                 Text(
-                                    text = tr(isArabic, "تم التنزيل بنجاح على الهاتف ✓", "Downloaded to Device ✓"),
+                                    text = tr(isArabic, "تم تجهيز الملف باسم التقرير ✓", "File Ready With Report Name ✓"),
                                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                                     color = ext.incomeColor
                                 )
@@ -376,6 +485,51 @@ fun UniversalExportDialog(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+                            driveSavedMsg?.let { msg ->
+                                Text(
+                                    text = msg,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = ext.incomeColor
+                                )
+                            }
+                            // Direct Google Drive / SAF Upload Button with exact report file name
+                            Button(
+                                onClick = {
+                                    val launched = runCatching {
+                                        when (outcome.mimeType) {
+                                            "application/pdf" -> createPdfDriveLauncher.launch(outcome.fileName)
+                                            "application/vnd.ms-excel" -> createExcelDriveLauncher.launch(outcome.fileName)
+                                            "text/csv" -> createCsvDriveLauncher.launch(outcome.fileName)
+                                            else -> createImageDriveLauncher.launch(outcome.fileName)
+                                        }
+                                        true
+                                    }.getOrDefault(false)
+                                    if (!launched) {
+                                        ExportManager.shareFile(
+                                            context,
+                                            outcome.file,
+                                            outcome.mimeType,
+                                            outcome.fileName
+                                        )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp)
+                                    .testTag("export_upload_drive_btn"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ext.heroCardBackground,
+                                    contentColor = ext.heroCardOnBackground
+                                )
+                            ) {
+                                Icon(Icons.Outlined.CloudUpload, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = tr(isArabic, "رفع على جوجل درايف بنفس الاسم", "Upload to Google Drive With Name"),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -398,7 +552,7 @@ fun UniversalExportDialog(
                                             context,
                                             outcome.file,
                                             outcome.mimeType,
-                                            tr(isArabic, "مشاركة $reportTitle", "Share $reportTitle")
+                                            outcome.fileName
                                         )
                                     },
                                     modifier = Modifier
@@ -409,7 +563,7 @@ fun UniversalExportDialog(
                                 ) {
                                     Icon(Icons.Outlined.Share, contentDescription = null, tint = ext.incomeColor, modifier = Modifier.size(15.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text(tr(isArabic, "مشاركة / حفظ", "Share"), color = ext.incomeColor, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                                    Text(tr(isArabic, "مشاركة / درايف", "Share / Drive"), color = ext.incomeColor, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
                                 }
                             }
                         }

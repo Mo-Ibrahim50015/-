@@ -1,5 +1,6 @@
 package com.example.util
 
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -46,15 +47,84 @@ object ExportManager {
         return dir
     }
 
+    private fun dateSlug(): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
     private fun timestampSlug(): String =
         SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 
     private fun readableTimestamp(): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
 
-    private fun safeFilePrefix(titleSlug: String): String {
-        val cleaned = titleSlug.replace(Regex("[^A-Za-z0-9_\\-]"), "_").trim('_')
-        return if (cleaned.isNotBlank()) cleaned.take(28) else "Masrofy"
+    /**
+     * Builds a clean, descriptive Unicode (Arabic + English) filename reflecting the actual report
+     * and active filters — used for local downloads, Share Sheet, and Google Drive uploads.
+     */
+    fun buildSmartFileName(
+        reportTitle: String,
+        filterSummary: String = "",
+        extension: String = "",
+        isArabic: Boolean = true,
+        customFileName: String = "",
+        dateStamp: String = dateSlug()
+    ): String {
+        val cleanExt = extension.trim().trimStart('.').lowercase(Locale.US)
+
+        fun sanitizePart(raw: String, maxLen: Int): String {
+            return raw
+                .replace(Regex("""[\\/:*?"<>|\r\n\t]+"""), " ")
+                .replace(Regex("""[•|]+"""), " - ")
+                .replace(Regex("""\s+"""), "_")
+                .replace(Regex("""_{2,}"""), "_")
+                .replace(Regex("""_-_|_-|-_"""), "-")
+                .trim('_', '-', '.', ' ')
+                .take(maxLen)
+                .trim('_', '-', '.', ' ')
+        }
+
+        val customClean = if (customFileName.isNotBlank()) {
+            val stripped = if (cleanExt.isNotBlank() && customFileName.trim().lowercase(Locale.US).endsWith(".$cleanExt")) {
+                customFileName.trim().dropLast(cleanExt.length + 1)
+            } else {
+                customFileName.trim()
+            }
+            sanitizePart(stripped, 80)
+        } else ""
+
+        if (customClean.isNotBlank()) {
+            return if (cleanExt.isNotBlank()) "$customClean.$cleanExt" else customClean
+        }
+
+        val fallbackTitle = tr(isArabic, "تقرير_مصروفي", "Masrofy_Report")
+        val baseTitle = sanitizePart(reportTitle, 44).ifBlank { fallbackTitle }
+
+        val meaningfulFilterParts = filterSummary
+            .split("•", "|")
+            .map { it.trim() }
+            .filter { part ->
+                part.isNotBlank() &&
+                    !part.contains("كل البيانات", ignoreCase = true) &&
+                    !part.contains("بدون فلاتر", ignoreCase = true) &&
+                    !part.contains("نسخة كاملة", ignoreCase = true) &&
+                    !part.contains("ملخص كامل", ignoreCase = true) &&
+                    !part.contains("All Data", ignoreCase = true) &&
+                    !part.contains("No Filters", ignoreCase = true) &&
+                    !part.contains("Full Ledger", ignoreCase = true) &&
+                    !part.contains("Full Data", ignoreCase = true) &&
+                    !Regex("""^\d+\s*(عملية|بند|عنصر|items?|rows?|entries)$""", RegexOption.IGNORE_CASE).matches(part)
+            }
+            .take(2)
+            .joinToString(" - ")
+
+        val filterPart = sanitizePart(meaningfulFilterParts, 34)
+        val combinedBase = if (filterPart.isNotBlank() && !baseTitle.contains(filterPart, ignoreCase = true)) {
+            "${baseTitle}_-_${filterPart}"
+        } else {
+            baseTitle
+        }
+
+        val finalStem = if (dateStamp.isNotBlank()) "${combinedBase}_${dateStamp}" else combinedBase
+        return if (cleanExt.isNotBlank()) "$finalStem.$cleanExt" else finalStem
     }
 
     private fun loadTypeface(context: Context): Typeface {
@@ -69,19 +139,34 @@ object ExportManager {
         transactions: List<TransactionEntity>,
         isArabic: Boolean,
         reportTitle: String = "",
-        obligations: List<ObligationEntity> = emptyList()
+        obligations: List<ObligationEntity> = emptyList(),
+        filterSummary: String = "",
+        customFileName: String = ""
     ): File {
-        val file = File(exportsDir(context), "${safeFilePrefix("Masrofy")}_${timestampSlug()}.csv")
+        val defaultTitle = reportTitle.ifBlank { tr(isArabic, "سجل عمليات مصروفي", "Masrofy Transactions") }
+        val fileName = buildSmartFileName(
+            reportTitle = defaultTitle,
+            filterSummary = filterSummary,
+            extension = "csv",
+            isArabic = isArabic,
+            customFileName = customFileName
+        )
+        val file = File(exportsDir(context), fileName)
         val sb = StringBuilder()
         sb.append('\uFEFF')
         if (reportTitle.isNotBlank()) {
             sb.appendLine(escapeCsv("$reportTitle — ${readableTimestamp()}"))
+        }
+        if (filterSummary.isNotBlank()) {
+            sb.appendLine(escapeCsv("${tr(isArabic, "نطاق الفلاتر:", "Filter Scope:")} $filterSummary"))
+        }
+        if (reportTitle.isNotBlank() || filterSummary.isNotBlank()) {
             sb.appendLine()
         }
         if (isArabic) {
-            sb.appendLine("التاريخ,الوقت,النوع,الحالة,البيان / السبب,الجهة / الشخص,المبلغ,العملة,التصنيف,الحساب / الوسيلة,موعد السداد,ملاحظات")
+            sb.appendLine("التاريخ,الوقت,النوع,الحالة,عشان إيه (البند / السبب),اندفعت لمين (الجهة / الشخص),المبلغ,العملة,التصنيف,الحساب / الوسيلة,موعد السداد,الملاحظة الإضافية")
         } else {
-            sb.appendLine("Date,Time,Type,Status,Item / Reason,Party,Amount,Currency,Category,Account / Method,Due Date,Notes")
+            sb.appendLine("Date,Time,Type,Status,What For (Item / Reason),Paid To (Party),Amount,Currency,Category,Account / Method,Due Date,Additional Notes")
         }
         transactions.forEach { tx ->
             val typeLabel = when {
@@ -136,21 +221,31 @@ object ExportManager {
         return file
     }
 
-    /** Generates styled Excel SpreadsheetML (.xls) XML workbook with full Arabic RTL, column widths, and summary row. */
+    /** Generates styled Excel SpreadsheetML (.xls) XML workbook with full Arabic RTL, column widths, filter scope, and summary row. */
     fun exportExcelWorkbook(
         context: Context,
         transactions: List<TransactionEntity>,
         isArabic: Boolean,
         reportTitle: String = "",
-        obligations: List<ObligationEntity> = emptyList()
+        obligations: List<ObligationEntity> = emptyList(),
+        filterSummary: String = "",
+        customFileName: String = ""
     ): File {
-        val file = File(exportsDir(context), "Masrofy_${timestampSlug()}.xls")
+        val defaultTitle = reportTitle.ifBlank { tr(isArabic, "كشف عمليات مصروفي", "Masrofy Financial Statement") }
+        val fileName = buildSmartFileName(
+            reportTitle = defaultTitle,
+            filterSummary = filterSummary,
+            extension = "xls",
+            isArabic = isArabic,
+            customFileName = customFileName
+        )
+        val file = File(exportsDir(context), fileName)
         val headers = if (isArabic) {
-            listOf("التاريخ", "الوقت", "النوع", "الحالة", "البيان / السبب", "الجهة / الشخص", "المبلغ", "العملة", "التصنيف", "الحساب / الوسيلة", "موعد السداد", "ملاحظات")
+            listOf("التاريخ", "الوقت", "النوع", "الحالة", "عشان إيه (البند / السبب)", "اندفعت لمين (الجهة / الشخص)", "المبلغ", "العملة", "التصنيف", "الحساب / الوسيلة", "موعد السداد", "الملاحظة الإضافية")
         } else {
-            listOf("Date", "Time", "Type", "Status", "Item / Reason", "Party", "Amount", "Currency", "Category", "Account / Method", "Due Date", "Notes")
+            listOf("Date", "Time", "Type", "Status", "What For (Item / Reason)", "Paid To (Party)", "Amount", "Currency", "Category", "Account / Method", "Due Date", "Additional Notes")
         }
-        val colWidths = listOf(78, 56, 86, 130, 140, 110, 88, 56, 110, 115, 105, 160)
+        val colWidths = listOf(78, 56, 86, 130, 145, 120, 88, 56, 110, 115, 105, 175)
 
         val sb = StringBuilder()
         sb.appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
@@ -185,6 +280,12 @@ object ExportManager {
         sb.appendLine(
             """<Row ss:Height="28"><Cell ss:MergeAcross="${headers.size - 1}" ss:StyleID="Title"><Data ss:Type="String">${escapeXml(bannerText)}</Data></Cell></Row>"""
         )
+        if (filterSummary.isNotBlank()) {
+            val scopeText = "${tr(isArabic, "نطاق الفلاتر:", "Filter Scope:")} $filterSummary"
+            sb.appendLine(
+                """<Row ss:Height="22"><Cell ss:MergeAcross="${headers.size - 1}" ss:StyleID="Total"><Data ss:Type="String">${escapeXml(scopeText)}</Data></Cell></Row>"""
+            )
+        }
 
         // Header Row
         sb.append("""<Row ss:Height="24">""")
@@ -272,9 +373,18 @@ object ExportManager {
         filterSummary: String,
         isArabic: Boolean,
         reportTitle: String = "",
-        obligations: List<ObligationEntity> = emptyList()
+        obligations: List<ObligationEntity> = emptyList(),
+        customFileName: String = ""
     ): File {
-        val file = File(exportsDir(context), "Masrofy_Report_${timestampSlug()}.pdf")
+        val defaultTitle = reportTitle.ifBlank { tr(isArabic, "تقرير مصروفي المالي", "Masrofy Financial Report") }
+        val fileName = buildSmartFileName(
+            reportTitle = defaultTitle,
+            filterSummary = filterSummary,
+            extension = "pdf",
+            isArabic = isArabic,
+            customFileName = customFileName
+        )
+        val file = File(exportsDir(context), fileName)
         val pdf = PdfDocument()
         val pageWidth = 595
         val pageHeight = 842
@@ -427,22 +537,27 @@ object ExportManager {
         }
 
         analytics.filteredTransactions.forEachIndexed { idx, tx ->
-            ensureSpace(44f)
+            val hasNote = tx.note.isNotBlank()
+            val rowHeight = if (hasNote) 56f else 40f
+            ensureSpace(rowHeight + 4f)
             if (idx % 2 == 1) {
                 bgPaint.color = Color.parseColor("#F8FAFC")
-                canvas.drawRect(margin, y - 2f, pageWidth - margin, y + 38f, bgPaint)
+                canvas.drawRect(margin, y - 2f, pageWidth - margin, y + rowHeight - 2f, bgPaint)
             }
             val txSym = currencySymbol(tx.currency, isArabic)
             val isInc = tx.type == TransactionType.INCOME
             val amountStr = "${if (isInc) "+" else "-"} ${formatAmountMinor(tx.amountMinor)} $txSym"
-            val displayName = tx.itemName.ifBlank { tx.note }.ifBlank { tx.category }
+            val displayName = tx.itemName.ifBlank { tx.category }
             val debtTag = if (tx.isDebt) " [${debtStatusLabel(tx, isArabic)}]" else ""
-            val partyTag = if (tx.debtParty.isNotBlank()) " • ${tx.debtParty}" else ""
+            val partyTag = if (tx.debtParty.isNotBlank()) {
+                " • ${tr(isArabic, "الجهة:", "Party:")} ${tx.debtParty}"
+            } else ""
             val rowTitle = "$displayName$partyTag$debtTag"
             val dueTag = if (tx.paymentDueDate.isNotBlank()) {
-                " • ${tr(isArabic, "سداد:", "Due:")} ${tx.paymentDueDate}"
+                " • ${tr(isArabic, "سداد:", "Due:")} ${tx.paymentDueDate} ${tx.paymentDueTime}".trim()
             } else ""
             val rowMeta = "${tx.date} ${tx.time} • ${tx.category} • ${tx.source}$dueTag"
+            val noteLine = if (hasNote) "${tr(isArabic, "ملاحظة:", "Note:")} ${tx.note}" else ""
 
             val amtPaint = TextPaint(bodyPaint).apply {
                 color = if (isInc) Color.parseColor("#006C4A") else Color.parseColor("#BA1A1A")
@@ -453,29 +568,45 @@ object ExportManager {
                 drawAlignedText(canvas, rowTitle, bodyPaint, margin + 132f, y, contentWidth - 136, true)
                 drawAlignedText(canvas, amountStr, amtPaint, margin + 4f, y, 124, false)
                 drawAlignedText(canvas, rowMeta, mutedPaint, margin + 132f, y + 17f, contentWidth - 136, true)
+                if (hasNote) {
+                    drawAlignedText(canvas, noteLine, mutedPaint, margin + 132f, y + 33f, contentWidth - 136, true)
+                }
             } else {
                 drawAlignedText(canvas, rowTitle, bodyPaint, margin + 4f, y, contentWidth - 136, false)
                 drawAlignedText(canvas, amountStr, amtPaint, pageWidth - margin - 128f, y, 124, true)
                 drawAlignedText(canvas, rowMeta, mutedPaint, margin + 4f, y + 17f, contentWidth - 136, false)
+                if (hasNote) {
+                    drawAlignedText(canvas, noteLine, mutedPaint, margin + 4f, y + 33f, contentWidth - 136, false)
+                }
             }
 
-            y += 40f
+            y += rowHeight
             canvas.drawLine(margin, y - 3f, pageWidth - margin, y - 3f, linePaint)
         }
 
         obligations.forEachIndexed { idx, ob ->
-            ensureSpace(44f)
+            val hasNote = ob.note.isNotBlank()
+            val rowHeight = if (hasNote) 56f else 40f
+            ensureSpace(rowHeight + 4f)
             if ((analytics.filteredTransactions.size + idx) % 2 == 1) {
                 bgPaint.color = Color.parseColor("#FFFBEB")
-                canvas.drawRect(margin, y - 2f, pageWidth - margin, y + 38f, bgPaint)
+                canvas.drawRect(margin, y - 2f, pageWidth - margin, y + rowHeight - 2f, bgPaint)
             }
             val obSym = currencySymbol(ob.currency, isArabic)
             val amountStr = "- ${formatAmountMinor(ob.amountMinor)} $obSym"
             val statusTxt = if (ob.isPaid) tr(isArabic, "تم السداد", "Paid") else tr(isArabic, "مطلوب سداده", "Due")
-            val partyTag = if (ob.party.isNotBlank()) " • ${ob.party}" else ""
+            val partyTag = if (ob.party.isNotBlank()) {
+                " • ${tr(isArabic, "الجهة:", "Party:")} ${ob.party}"
+            } else ""
             val rowTitle = "${ob.reason}$partyTag [$statusTxt]"
-            val rowMeta = "${tr(isArabic, "موعد السداد:", "Due:")} ${ob.dueDate} ${ob.dueTime}" +
-                if (ob.note.isNotBlank()) " • ${ob.note}" else ""
+            val sourceTag = if (ob.paidSource.isNotBlank()) " • ${ob.paidSource}" else ""
+            val dueInfo = if (ob.dueDate.isNotBlank()) {
+                "${tr(isArabic, "موعد السداد:", "Due:")} ${ob.dueDate} ${ob.dueTime}".trim()
+            } else {
+                tr(isArabic, "التزام بدون موعد محدد", "Unscheduled Obligation")
+            }
+            val rowMeta = "$dueInfo$sourceTag"
+            val noteLine = if (hasNote) "${tr(isArabic, "ملاحظة:", "Note:")} ${ob.note}" else ""
 
             val amtPaint = TextPaint(bodyPaint).apply {
                 color = if (ob.isPaid) Color.parseColor("#006C4A") else Color.parseColor("#D97706")
@@ -486,12 +617,18 @@ object ExportManager {
                 drawAlignedText(canvas, rowTitle, bodyPaint, margin + 132f, y, contentWidth - 136, true)
                 drawAlignedText(canvas, amountStr, amtPaint, margin + 4f, y, 124, false)
                 drawAlignedText(canvas, rowMeta, mutedPaint, margin + 132f, y + 17f, contentWidth - 136, true)
+                if (hasNote) {
+                    drawAlignedText(canvas, noteLine, mutedPaint, margin + 132f, y + 33f, contentWidth - 136, true)
+                }
             } else {
                 drawAlignedText(canvas, rowTitle, bodyPaint, margin + 4f, y, contentWidth - 136, false)
                 drawAlignedText(canvas, amountStr, amtPaint, pageWidth - margin - 128f, y, 124, true)
                 drawAlignedText(canvas, rowMeta, mutedPaint, margin + 4f, y + 17f, contentWidth - 136, false)
+                if (hasNote) {
+                    drawAlignedText(canvas, noteLine, mutedPaint, margin + 4f, y + 33f, contentWidth - 136, false)
+                }
             }
-            y += 40f
+            y += rowHeight
             canvas.drawLine(margin, y - 3f, pageWidth - margin, y - 3f, linePaint)
         }
 
@@ -519,10 +656,11 @@ object ExportManager {
         preferredCurrency: String,
         reportTitle: String,
         filterSummary: String,
-        isArabic: Boolean
+        isArabic: Boolean,
+        customFileName: String = ""
     ): File {
         val analytics = computeAnalytics(transactions, preferredCurrency, obligations)
-        return exportPdfReport(context, analytics, filterSummary, isArabic, reportTitle, obligations)
+        return exportPdfReport(context, analytics, filterSummary, isArabic, reportTitle, obligations, customFileName)
     }
 
     /** Generates a high-resolution PNG report card with KPIs, Donut breakdown & top operations. */
@@ -531,11 +669,13 @@ object ExportManager {
         analytics: ReportAnalytics,
         filterSummary: String,
         isArabic: Boolean,
-        reportTitle: String = ""
+        reportTitle: String = "",
+        customFileName: String = ""
     ): File {
         val width = 1080
         val topRows = analytics.filteredTransactions.take(10)
-        val height = 880 + (topRows.size * 76)
+        val topObs = if (topRows.size < 10) analytics.filteredObligations.take(10 - topRows.size) else emptyList()
+        val height = 880 + ((topRows.size + topObs.size) * 76)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val typeface = loadTypeface(context)
@@ -678,7 +818,8 @@ object ExportManager {
             val txSym = currencySymbol(tx.currency, isArabic)
             val isInc = tx.type == TransactionType.INCOME
             val amt = "${if (isInc) "+" else "-"} ${formatAmountMinor(tx.amountMinor)} $txSym"
-            val rowText = "${tx.itemName.ifBlank { tx.category }} • ${tx.source} (${tx.date})"
+            val partyPart = if (tx.debtParty.isNotBlank()) " • ${tx.debtParty}" else ""
+            val rowText = "${tx.itemName.ifBlank { tx.category }}$partyPart • ${tx.source} (${tx.date})"
             val ap = TextPaint(legPaint).apply {
                 color = if (isInc) Color.parseColor("#006C4A") else Color.parseColor("#BA1A1A")
                 this.typeface = Typeface.create(typeface, Typeface.BOLD)
@@ -692,8 +833,36 @@ object ExportManager {
             }
             rowY += 74f
         }
+        topObs.forEach { ob ->
+            paint.color = Color.WHITE
+            canvas.drawRoundRect(RectF(margin, rowY, width - margin, rowY + 64f), 16f, 16f, paint)
+            val obSym = currencySymbol(ob.currency, isArabic)
+            val amt = "- ${formatAmountMinor(ob.amountMinor)} $obSym"
+            val partyPart = if (ob.party.isNotBlank()) " • ${ob.party}" else ""
+            val rowText = "${ob.reason}$partyPart (${ob.dueDate.ifBlank { tr(isArabic, "التزام", "Due") }})"
+            val ap = TextPaint(legPaint).apply {
+                color = if (ob.isPaid) Color.parseColor("#006C4A") else Color.parseColor("#D97706")
+                this.typeface = Typeface.create(typeface, Typeface.BOLD)
+            }
+            if (isArabic) {
+                drawAlignedText(canvas, rowText, legPaint, margin + 255f, rowY + 16f, contentW - 280, true)
+                drawAlignedText(canvas, amt, ap, margin + 20f, rowY + 16f, 225, false)
+            } else {
+                drawAlignedText(canvas, rowText, legPaint, margin + 22f, rowY + 16f, contentW - 280, false)
+                drawAlignedText(canvas, amt, ap, width - margin - 245f, rowY + 16f, 225, true)
+            }
+            rowY += 74f
+        }
 
-        val file = File(exportsDir(context), "Masrofy_Report_${timestampSlug()}.png")
+        val defaultTitle = reportTitle.ifBlank { tr(isArabic, "ملخص تقرير مصروفي", "Masrofy Report Summary") }
+        val fileName = buildSmartFileName(
+            reportTitle = defaultTitle,
+            filterSummary = filterSummary,
+            extension = "png",
+            isArabic = isArabic,
+            customFileName = customFileName
+        )
+        val file = File(exportsDir(context), fileName)
         FileOutputStream(file).use { out ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 95, out)
         }
@@ -708,14 +877,26 @@ object ExportManager {
         preferredCurrency: String,
         reportTitle: String,
         filterSummary: String,
-        isArabic: Boolean
+        isArabic: Boolean,
+        customFileName: String = ""
     ): File {
         val analytics = computeAnalytics(transactions, preferredCurrency, obligations)
-        return exportReportImage(context, analytics, filterSummary, isArabic, reportTitle)
+        return exportReportImage(context, analytics, filterSummary, isArabic, reportTitle, customFileName)
     }
 
-    fun exportJsonBackupFile(context: Context, jsonContent: String): File {
-        val file = File(exportsDir(context), "Masrofy_Backup_${timestampSlug()}.json")
+    fun exportJsonBackupFile(
+        context: Context,
+        jsonContent: String,
+        isArabic: Boolean = true,
+        customFileName: String = ""
+    ): File {
+        val fileName = buildSmartFileName(
+            reportTitle = tr(isArabic, "نسخة احتياطية مصروفي", "Masrofy Backup"),
+            extension = "json",
+            isArabic = isArabic,
+            customFileName = customFileName
+        )
+        val file = File(exportsDir(context), fileName)
         file.writeText(jsonContent, Charsets.UTF_8)
         return file
     }
@@ -730,6 +911,9 @@ object ExportManager {
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = mimeType
                 putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, file.nameWithoutExtension)
+                putExtra(Intent.EXTRA_TITLE, file.name)
+                clipData = ClipData.newRawUri(file.name, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             val chooser = Intent.createChooser(intent, chooserTitle).apply {

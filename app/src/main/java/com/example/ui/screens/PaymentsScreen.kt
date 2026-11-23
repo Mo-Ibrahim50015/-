@@ -66,6 +66,7 @@ import com.example.ui.components.DropdownFilterOption
 import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
@@ -202,6 +203,9 @@ fun PaymentsScreen(
     }
     var selectedSource by remember { mutableStateOf<String?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
+    var selectedParty by remember { mutableStateOf<String?>(null) }
+    var selectedItem by remember { mutableStateOf<String?>(null) }
+    var noteFilterQuery by remember { mutableStateOf("") }
     var groupMode by remember { mutableStateOf(PaymentGroupMode.FLAT) }
     var pendingDeleteTx by remember { mutableStateOf<TransactionEntity?>(null) }
     var pendingReopenTx by remember { mutableStateOf<TransactionEntity?>(null) }
@@ -231,10 +235,19 @@ fun PaymentsScreen(
     val settledPaidMinor = remember(settledObligationsAndDebts) { settledObligationsAndDebts.sumOf { it.amountMinor } }
 
     val availableSources = remember(currencyPayments) {
-        currencyPayments.map { it.source }.distinct().sorted()
+        currencyPayments.map { it.source }.filter { it.isNotBlank() }.distinct().sorted()
     }
     val availableCategories = remember(currencyPayments) {
-        currencyPayments.map { it.category }.distinct().sorted()
+        currencyPayments.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableParties = remember(currencyPayments) {
+        currencyPayments.map { it.party.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableItems = remember(currencyPayments) {
+        currencyPayments.map { it.title.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableNotes = remember(currencyPayments) {
+        currencyPayments.map { it.note.trim() }.filter { it.isNotBlank() }.distinct().sorted()
     }
 
     val filteredPayments = remember(
@@ -242,9 +255,13 @@ fun PaymentsScreen(
         searchQuery,
         typeTab,
         selectedSource,
-        selectedCategory
+        selectedCategory,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
     ) {
         val q = searchQuery.trim().lowercase()
+        val nq = noteFilterQuery.trim()
         currencyPayments.filter { rec ->
             val matchesTab = when (typeTab) {
                 TransactionType.EXPENSE -> rec.kind == ActualPaidKind.PAID_EXPENSE
@@ -254,6 +271,9 @@ fun PaymentsScreen(
             if (!matchesTab) return@filter false
             if (selectedSource != null && rec.source != selectedSource) return@filter false
             if (selectedCategory != null && rec.category != selectedCategory) return@filter false
+            if (selectedParty != null && rec.party.trim() != selectedParty) return@filter false
+            if (selectedItem != null && rec.title.trim() != selectedItem) return@filter false
+            if (nq.isNotEmpty() && !rec.note.contains(nq, ignoreCase = true)) return@filter false
             if (q.isNotEmpty()) {
                 val amtStr = formatAmountMinor(rec.amountMinor, false)
                 val hay = "${rec.title} ${rec.party} ${rec.category} ${rec.source} ${rec.note} ${rec.date} $amtStr".lowercase()
@@ -263,7 +283,48 @@ fun PaymentsScreen(
         }
     }
     val filteredTotalMinor = remember(filteredPayments) { filteredPayments.sumOf { it.amountMinor } }
-    val hasActiveFilters = searchQuery.isNotBlank() || typeTab != "all" || selectedSource != null || selectedCategory != null
+    val hasActiveFilters = searchQuery.isNotBlank() ||
+        typeTab != "all" ||
+        selectedSource != null ||
+        selectedCategory != null ||
+        selectedParty != null ||
+        selectedItem != null ||
+        noteFilterQuery.isNotBlank()
+
+    val exportFilterSummary = remember(
+        hasActiveFilters,
+        filteredPayments.size,
+        filteredTotalMinor,
+        typeTab,
+        selectedSource,
+        selectedCategory,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery,
+        searchQuery,
+        sym,
+        isArabic
+    ) {
+        if (!hasActiveFilters) {
+            tr(
+                isArabic,
+                "كل المبالغ اللي اندفعت بالفعل (${filteredPayments.size} عملية • ${formatAmountMinor(filteredTotalMinor)} $sym — بدون فلاتر)",
+                "All Actually Paid Amounts (${filteredPayments.size} items • ${formatAmountMinor(filteredTotalMinor)} $sym — No Filters)"
+            )
+        } else {
+            buildList {
+                if (typeTab == TransactionType.EXPENSE) add(tr(isArabic, "مصروفات مدفوعة", "Paid Expenses"))
+                if (typeTab == "settled") add(tr(isArabic, "التزامات مسددة", "Settled Dues"))
+                selectedSource?.let { add(tr(isArabic, "الحساب: $it", "Account: $it")) }
+                selectedCategory?.let { add(tr(isArabic, "التصنيف: $it", "Category: $it")) }
+                selectedParty?.let { add(tr(isArabic, "اندفعت لمين: $it", "Paid To: $it")) }
+                selectedItem?.let { add(tr(isArabic, "عشان إيه: $it", "What For: $it")) }
+                if (noteFilterQuery.isNotBlank()) add(tr(isArabic, "ملاحظة: \"${noteFilterQuery.trim()}\"", "Note: \"${noteFilterQuery.trim()}\""))
+                if (searchQuery.isNotBlank()) add(tr(isArabic, "بحث: \"${searchQuery.trim()}\"", "Search: \"${searchQuery.trim()}\""))
+                add("${filteredPayments.size} • ${formatAmountMinor(filteredTotalMinor)} $sym")
+            }.joinToString(" • ")
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         LazyColumn(
@@ -418,63 +479,25 @@ fun PaymentsScreen(
                 }
             }
 
-            // 2. Three Dedicated Tabs: All | Direct Paid Expenses | Settled Obligations & Debts
-            item {
-                SereneCard(contentPadding = PaddingValues(10.dp)) {
-                    Text(
-                        text = tr(
-                            isArabic,
-                            "تصنيف المبالغ اللي اندفعت بالفعل:",
-                            "Filter Actually Paid Amounts:"
-                        ),
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        PaymentTabCard(
-                            modifier = Modifier.weight(0.85f),
-                            title = tr(isArabic, "الكل", "All"),
-                            subtitle = "${currencyPayments.size} • ${formatAmountMinor(totalPaidMinor, false)}",
-                            accent = ext.incomeColor,
-                            selected = typeTab == "all",
-                            tag = "payments_tab_all",
-                            onClick = { typeTab = "all" }
-                        )
-                        PaymentTabCard(
-                            modifier = Modifier.weight(1.1f),
-                            title = tr(isArabic, "مصروفات مدفوعة", "Paid Expenses"),
-                            subtitle = "${directExpenses.size} • ${formatAmountMinor(directExpensePaidMinor, false)} $sym",
-                            accent = ext.expenseColor,
-                            selected = typeTab == TransactionType.EXPENSE,
-                            tag = "payments_tab_expense",
-                            onClick = { typeTab = TransactionType.EXPENSE }
-                        )
-                        PaymentTabCard(
-                            modifier = Modifier.weight(1.15f),
-                            title = tr(isArabic, "التزامات مسددة", "Settled Dues"),
-                            subtitle = "${settledObligationsAndDebts.size} • ${formatAmountMinor(settledPaidMinor, false)} $sym",
-                            accent = MaterialTheme.colorScheme.primary,
-                            selected = typeTab == "settled",
-                            tag = "payments_tab_settled",
-                            onClick = { typeTab = "settled" }
-                        )
-                    }
-                }
-            }
-
-            // 3. Compact Collapsible Dropdown Filters & Formatted Export
+            // 2. Unified Collapsible Searchable Dropdown Filters & Formatted Export
             item {
                 val activeFilterCount = listOf(
                     searchQuery.isNotBlank(),
+                    typeTab != "all",
                     selectedSource != null,
                     selectedCategory != null,
+                    selectedParty != null,
+                    selectedItem != null,
+                    noteFilterQuery.isNotBlank(),
                     groupMode != PaymentGroupMode.FLAT
                 ).count { it }
+                val typeOptions = remember(currencyPayments.size, directExpenses.size, settledObligationsAndDebts.size, isArabic) {
+                    listOf(
+                        DropdownFilterOption("all", tr(isArabic, "الكل (${currencyPayments.size})", "All (${currencyPayments.size})")),
+                        DropdownFilterOption(TransactionType.EXPENSE, tr(isArabic, "مصروفات مدفوعة (${directExpenses.size})", "Paid Expenses (${directExpenses.size})")),
+                        DropdownFilterOption("settled", tr(isArabic, "التزامات مسددة (${settledObligationsAndDebts.size})", "Settled Dues (${settledObligationsAndDebts.size})"))
+                    )
+                }
                 val sourceOptions = remember(availableSources, isArabic) {
                     listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الحسابات", "All Accounts"))) +
                         availableSources.map { DropdownFilterOption<String?>(it, it) }
@@ -482,6 +505,14 @@ fun PaymentsScreen(
                 val categoryOptions = remember(availableCategories, isArabic) {
                     listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل التصنيفات", "All Categories"))) +
                         availableCategories.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val partyOptions = remember(availableParties, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                        availableParties.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val itemOptions = remember(availableItems, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                        availableItems.map { DropdownFilterOption<String?>(it, it) }
                 }
                 val groupOptions = remember(isArabic) {
                     listOf(
@@ -497,11 +528,7 @@ fun PaymentsScreen(
                         obligations = filteredPayments.mapNotNull { it.obligation },
                         preferredCurrency = validCurrency,
                         reportTitle = tr(isArabic, "كل المبالغ اللي اندفعت بالفعل", "All Actually Paid Amounts"),
-                        filterSummary = tr(
-                            isArabic,
-                            "${filteredPayments.size} عملية مدفوعة • ${formatAmountMinor(filteredTotalMinor)} $sym",
-                            "${filteredPayments.size} paid entries • ${formatAmountMinor(filteredTotalMinor)} $sym"
-                        ),
+                        filterSummary = exportFilterSummary,
                         isArabic = isArabic,
                         testTag = "payments_export_btn",
                         modifier = Modifier.fillMaxWidth()
@@ -516,6 +543,9 @@ fun PaymentsScreen(
                                 typeTab = "all"
                                 selectedSource = null
                                 selectedCategory = null
+                                selectedParty = null
+                                selectedItem = null
+                                noteFilterQuery = ""
                                 groupMode = PaymentGroupMode.FLAT
                             }
                         } else null,
@@ -573,42 +603,114 @@ fun PaymentsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            if (availableSources.isNotEmpty()) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "تصنيف المدفوعات", "Payment Type"),
+                                selectedValue = typeTab,
+                                options = typeOptions,
+                                isArabic = isArabic,
+                                onSelected = { typeTab = it },
+                                isHighlighted = typeTab != "all",
+                                testTag = "payments_type_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "الحساب", "Account"),
+                                selectedValue = selectedSource,
+                                options = sourceOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedSource = it },
+                                isHighlighted = selectedSource != null,
+                                testTag = "payments_source_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "التصنيف", "Category"),
+                                selectedValue = selectedCategory,
+                                options = categoryOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedCategory = it },
+                                isHighlighted = selectedCategory != null,
+                                testTag = "payments_category_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "اندفعت لمين / الجهة", "Paid To / Party"),
+                                selectedValue = selectedParty,
+                                options = partyOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedParty = it },
+                                isHighlighted = selectedParty != null,
+                                testTag = "payments_party_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "عشان إيه / البند", "What For / Item"),
+                                selectedValue = selectedItem,
+                                options = itemOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedItem = it },
+                                isHighlighted = selectedItem != null,
+                                testTag = "payments_item_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartNoteFilterDropdown(
+                                label = tr(isArabic, "الملاحظة الإضافية", "Additional Notes"),
+                                noteQuery = noteFilterQuery,
+                                availableNotes = availableNotes,
+                                isArabic = isArabic,
+                                onNoteQueryChange = { noteFilterQuery = it },
+                                testTag = "payments_note_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "طريقة العرض", "Grouping Mode"),
+                                selectedValue = groupMode,
+                                options = groupOptions,
+                                isArabic = isArabic,
+                                onSelected = { groupMode = it },
+                                isHighlighted = groupMode != PaymentGroupMode.FLAT,
+                                testTag = "payments_group_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (availableCurrencies.size > 1) {
                                 SmartSingleSelectDropdown(
-                                    label = tr(isArabic, "الحساب", "Account"),
-                                    selectedValue = selectedSource,
-                                    options = sourceOptions,
+                                    label = tr(isArabic, "العملة", "Currency"),
+                                    selectedValue = validCurrency,
+                                    options = availableCurrencies.map { curr ->
+                                        DropdownFilterOption(curr, "${currencySymbol(curr, isArabic)} ($curr)")
+                                    },
                                     isArabic = isArabic,
-                                    onSelected = { selectedSource = it },
-                                    isHighlighted = selectedSource != null,
-                                    testTag = "payments_source_dropdown",
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            if (availableCategories.isNotEmpty()) {
-                                SmartSingleSelectDropdown(
-                                    label = tr(isArabic, "التصنيف", "Category"),
-                                    selectedValue = selectedCategory,
-                                    options = categoryOptions,
-                                    isArabic = isArabic,
-                                    onSelected = { selectedCategory = it },
-                                    isHighlighted = selectedCategory != null,
-                                    testTag = "payments_category_dropdown",
+                                    onSelected = { curr ->
+                                        activeCurrency = curr
+                                        selectedSource = null
+                                        selectedCategory = null
+                                        selectedParty = null
+                                        selectedItem = null
+                                    },
+                                    isHighlighted = validCurrency != settings.defaultCurrency,
+                                    testTag = "payments_currency_dropdown",
                                     modifier = Modifier.weight(1f)
                                 )
                             }
                         }
-
-                        SmartSingleSelectDropdown(
-                            label = tr(isArabic, "طريقة العرض والتنظيم", "Grouping Mode"),
-                            selectedValue = groupMode,
-                            options = groupOptions,
-                            isArabic = isArabic,
-                            onSelected = { groupMode = it },
-                            isHighlighted = groupMode != PaymentGroupMode.FLAT,
-                            testTag = "payments_group_dropdown",
-                            modifier = Modifier.fillMaxWidth()
-                        )
                     }
                 }
             }

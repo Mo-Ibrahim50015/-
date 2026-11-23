@@ -60,6 +60,7 @@ import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.ItemReminderConfig
 import com.example.ui.components.ReminderSettingsDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
@@ -124,6 +125,9 @@ fun FlowDrillDownScreen(
     var searchQuery by remember(spec) { mutableStateOf("") }
     var selectedCategory by remember(spec) { mutableStateOf<String?>(null) }
     var selectedChannel by remember(spec) { mutableStateOf<String?>(null) }
+    var selectedParty by remember(spec) { mutableStateOf<String?>(null) }
+    var selectedItem by remember(spec) { mutableStateOf<String?>(null) }
+    var noteFilterQuery by remember(spec) { mutableStateOf("") }
     var selectedCurrency by remember(spec) { mutableStateOf(spec.currency) }
     var reminderTargetTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
@@ -213,12 +217,42 @@ fun FlowDrillDownScreen(
             .distinct()
             .sorted()
     }
+    val availableParties = remember(currencyTx, currencyObs) {
+        (currencyTx.map { it.debtParty.trim() } + currencyObs.map { it.party.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableItems = remember(currencyTx, currencyObs) {
+        (currencyTx.map { it.itemName.trim() } + currencyObs.map { it.reason.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableNotes = remember(currencyTx, currencyObs) {
+        (currencyTx.map { it.note.trim() } + currencyObs.map { it.note.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
 
-    val filteredTx = remember(currencyTx, searchQuery, selectedCategory, selectedChannel) {
+    val filteredTx = remember(
+        currencyTx,
+        searchQuery,
+        selectedCategory,
+        selectedChannel,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
+    ) {
         val q = searchQuery.trim().lowercase()
+        val nq = noteFilterQuery.trim()
         currencyTx.filter { tx ->
             if (selectedCategory != null && tx.category != selectedCategory) return@filter false
             if (selectedChannel != null && tx.source != selectedChannel) return@filter false
+            if (selectedParty != null && tx.debtParty.trim() != selectedParty) return@filter false
+            if (selectedItem != null && tx.itemName.trim() != selectedItem) return@filter false
+            if (nq.isNotEmpty() && !tx.note.contains(nq, ignoreCase = true)) return@filter false
             if (q.isNotEmpty()) {
                 val hay = "${tx.itemName} ${tx.debtParty} ${tx.category} ${tx.source} ${tx.note} ${tx.date} ${formatAmountMinor(tx.amountMinor, false)}".lowercase()
                 if (!hay.contains(q)) return@filter false
@@ -227,10 +261,21 @@ fun FlowDrillDownScreen(
         }
     }
 
-    val filteredObs = remember(currencyObs, searchQuery, selectedChannel) {
+    val filteredObs = remember(
+        currencyObs,
+        searchQuery,
+        selectedChannel,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
+    ) {
         val q = searchQuery.trim().lowercase()
+        val nq = noteFilterQuery.trim()
         currencyObs.filter { ob ->
             if (selectedChannel != null && ob.paidSource != selectedChannel) return@filter false
+            if (selectedParty != null && ob.party.trim() != selectedParty) return@filter false
+            if (selectedItem != null && ob.reason.trim() != selectedItem) return@filter false
+            if (nq.isNotEmpty() && !ob.note.contains(nq, ignoreCase = true)) return@filter false
             if (q.isNotEmpty()) {
                 val hay = "${ob.reason} ${ob.party} ${ob.paidSource} ${ob.note} ${ob.paidDate} ${formatAmountMinor(ob.amountMinor, false)}".lowercase()
                 if (!hay.contains(q)) return@filter false
@@ -242,9 +287,14 @@ fun FlowDrillDownScreen(
     val totalAmountMinor = remember(filteredTx, filteredObs) {
         filteredTx.sumOf { it.amountMinor } + filteredObs.sumOf { it.amountMinor }
     }
-    val activeFilterCount = (if (searchQuery.isNotBlank()) 1 else 0) +
-        (if (selectedCategory != null) 1 else 0) +
-        (if (selectedChannel != null) 1 else 0)
+    val activeFilterCount = listOf(
+        searchQuery.isNotBlank(),
+        selectedCategory != null,
+        selectedChannel != null,
+        selectedParty != null,
+        selectedItem != null,
+        noteFilterQuery.isNotBlank()
+    ).count { it }
     val accent = when (spec.kind) {
         FlowDrillDownKind.BORROWED_INCOME_TO_REPAY -> ext.warningAmber
         else -> if (isIncomingScope) ext.incomeColor else ext.expenseColor
@@ -359,32 +409,73 @@ fun FlowDrillDownScreen(
 
             // 2. Formatted Export & Download Bar
             item {
+                val exportSummary = remember(
+                    spec.title,
+                    activeFilterCount,
+                    selectedCategory,
+                    selectedChannel,
+                    selectedParty,
+                    selectedItem,
+                    noteFilterQuery,
+                    searchQuery,
+                    filteredTx.size,
+                    filteredObs.size,
+                    isArabic
+                ) {
+                    val totalItems = filteredTx.size + filteredObs.size
+                    if (activeFilterCount == 0) {
+                        tr(
+                            isArabic,
+                            "${spec.title} (الكل بدون فلاتر) • $totalItems عملية",
+                            "${spec.title} (All, no filters) • $totalItems items"
+                        )
+                    } else {
+                        val parts = mutableListOf(spec.title)
+                        selectedCategory?.let { parts += tr(isArabic, "التصنيف: $it", "Category: $it") }
+                        selectedChannel?.let { parts += tr(isArabic, "الحساب: $it", "Account: $it") }
+                        selectedParty?.let { parts += tr(isArabic, "الجهة: $it", "Party: $it") }
+                        selectedItem?.let { parts += tr(isArabic, "عشان إيه: $it", "For: $it") }
+                        if (noteFilterQuery.isNotBlank()) parts += tr(isArabic, "الملاحظة: ${noteFilterQuery.trim()}", "Note: ${noteFilterQuery.trim()}")
+                        if (searchQuery.isNotBlank()) parts += tr(isArabic, "بحث: ${searchQuery.trim()}", "Search: ${searchQuery.trim()}")
+                        parts += tr(isArabic, "$totalItems عملية مطابقة", "$totalItems matching")
+                        parts.joinToString(" • ")
+                    }
+                }
                 ExportDownloadButton(
                     transactions = filteredTx,
                     obligations = filteredObs,
                     preferredCurrency = validCurrency,
                     reportTitle = spec.title,
-                    filterSummary = buildString {
-                        append(spec.title)
-                        if (selectedCategory != null) append(" • $selectedCategory")
-                        if (selectedChannel != null) append(" • $selectedChannel")
-                    },
+                    filterSummary = exportSummary,
                     isArabic = isArabic,
                     modifier = Modifier.fillMaxWidth(),
                     testTag = "drilldown_export_btn"
                 )
             }
 
-            // 3. Collapsible Dropdown Filters (with >5 Searchable Rule)
+            // 3. Collapsible Dropdown Filters (All filters in searchable dropdowns)
             item {
+                val partyOpts = remember(availableParties, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الجهات والأشخاص", "All Parties"))) +
+                        availableParties.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val itemOpts = remember(availableItems, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل البنود والأسباب", "All Items"))) +
+                        availableItems.map { DropdownFilterOption<String?>(it, it) }
+                }
                 CollapsibleFilterDropdownCard(
                     isArabic = isArabic,
                     activeFilterCount = activeFilterCount,
-                    onResetFilters = {
-                        searchQuery = ""
-                        selectedCategory = null
-                        selectedChannel = null
-                    },
+                    onResetFilters = if (activeFilterCount > 0) {
+                        {
+                            searchQuery = ""
+                            selectedCategory = null
+                            selectedChannel = null
+                            selectedParty = null
+                            selectedItem = null
+                            noteFilterQuery = ""
+                        }
+                    } else null,
                     testTagPrefix = "drilldown_filters"
                 ) {
                     OutlinedTextField(
@@ -401,7 +492,7 @@ fun FlowDrillDownScreen(
                         } else null,
                         placeholder = {
                             Text(
-                                text = tr(isArabic, "ابحث بالاسم، الجهة، التصنيف، أو المبلغ...", "Search item, party, category, amount..."),
+                                text = tr(isArabic, "بحث سريع بالاسم، الجهة، التصنيف، الملاحظة، أو المبلغ...", "Quick search item, party, category, note, amount..."),
                                 style = MaterialTheme.typography.bodySmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -419,33 +510,68 @@ fun FlowDrillDownScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        if (availableCategories.isNotEmpty()) {
-                            val catOpts = listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
-                                availableCategories.map { DropdownFilterOption<String?>(it, it) }
-                            SmartSingleSelectDropdown(
-                                label = tr(isArabic, "التصنيف / السبب", "Category / Way"),
-                                selectedValue = selectedCategory,
-                                options = catOpts,
-                                isArabic = isArabic,
-                                onSelected = { selectedCategory = it },
-                                isHighlighted = selectedCategory != null,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        if (availableChannels.isNotEmpty()) {
-                            val chOpts = listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
-                                availableChannels.map { DropdownFilterOption<String?>(it, it) }
-                            SmartSingleSelectDropdown(
-                                label = tr(isArabic, "الحساب / الطريقة", "Account / Channel"),
-                                selectedValue = selectedChannel,
-                                options = chOpts,
-                                isArabic = isArabic,
-                                onSelected = { selectedChannel = it },
-                                isHighlighted = selectedChannel != null,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                        val catOpts = listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                            availableCategories.map { DropdownFilterOption<String?>(it, it) }
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "التصنيف / السبب", "Category / Way"),
+                            selectedValue = selectedCategory,
+                            options = catOpts,
+                            isArabic = isArabic,
+                            onSelected = { selectedCategory = it },
+                            isHighlighted = selectedCategory != null,
+                            testTag = "drilldown_category_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        val chOpts = listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                            availableChannels.map { DropdownFilterOption<String?>(it, it) }
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "الحساب / الطريقة", "Account / Channel"),
+                            selectedValue = selectedChannel,
+                            options = chOpts,
+                            isArabic = isArabic,
+                            onSelected = { selectedChannel = it },
+                            isHighlighted = selectedChannel != null,
+                            testTag = "drilldown_channel_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
                     }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SmartSingleSelectDropdown(
+                            label = if (isIncomingScope) tr(isArabic, "من مين / الجهة", "From / Party")
+                            else tr(isArabic, "اندفعت لمين / الجهة", "Paid To / Party"),
+                            selectedValue = selectedParty,
+                            options = partyOpts,
+                            isArabic = isArabic,
+                            onSelected = { selectedParty = it },
+                            isHighlighted = selectedParty != null,
+                            testTag = "drilldown_party_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "عشان إيه / البند", "What For / Item"),
+                            selectedValue = selectedItem,
+                            options = itemOpts,
+                            isArabic = isArabic,
+                            onSelected = { selectedItem = it },
+                            isHighlighted = selectedItem != null,
+                            testTag = "drilldown_item_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    SmartNoteFilterDropdown(
+                        label = tr(isArabic, "الملاحظة الإضافية", "Additional Note"),
+                        noteQuery = noteFilterQuery,
+                        availableNotes = availableNotes,
+                        isArabic = isArabic,
+                        onNoteQueryChange = { noteFilterQuery = it },
+                        testTag = "drilldown_note_dropdown",
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
                     if (availableCurrencies.size > 1) {
                         SmartSingleSelectDropdown(
@@ -456,6 +582,7 @@ fun FlowDrillDownScreen(
                             },
                             isArabic = isArabic,
                             onSelected = { selectedCurrency = it },
+                            testTag = "drilldown_currency_dropdown",
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -617,11 +744,31 @@ fun FlowDrillDownScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (ob.party.isNotBlank()) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(Icons.Outlined.Person, contentDescription = null, tint = ext.expenseColor, modifier = Modifier.size(13.dp))
+                                        Text(
+                                            text = ob.party,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = ext.expenseColor
+                                        )
+                                    }
+                                }
                                 Text(
                                     text = "${ob.paidDate.ifBlank { ob.dueDate }} • ${formatTime12Hour(ob.dueTime, isArabic)}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (ob.note.isNotBlank()) {
+                                    Text(
+                                        text = ob.note,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                             Text(
                                 text = "-${formatAmountMinor(ob.amountMinor)} $obSym",

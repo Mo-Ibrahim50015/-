@@ -75,6 +75,7 @@ import com.example.ui.components.DropdownFilterOption
 import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.components.TransactionRowItem
 import com.example.ui.theme.AmountHeadlineStyle
@@ -114,6 +115,10 @@ fun LogScreen(
     var searchQuery by remember { mutableStateOf("") }
     var activeTypeTab by remember { mutableStateOf("all") } // all, expense, income, debt, debt_income, debt_expense
     var selectedCategory by remember { mutableStateOf<String?>(null) }
+    var selectedSource by remember { mutableStateOf<String?>(null) }
+    var selectedParty by remember { mutableStateOf<String?>(null) }
+    var selectedItem by remember { mutableStateOf<String?>(null) }
+    var noteFilterQuery by remember { mutableStateOf("") }
     var multiSelectMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var pendingDelete by remember { mutableStateOf<PendingLogDelete?>(null) }
@@ -123,9 +128,31 @@ fun LogScreen(
     val availableCategories = remember(transactions) {
         transactions.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
     }
+    val availableSources = remember(transactions) {
+        transactions.map { it.source }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableParties = remember(transactions) {
+        transactions.map { it.debtParty.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableItems = remember(transactions) {
+        transactions.map { it.itemName.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableNotes = remember(transactions) {
+        transactions.map { it.note.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
 
-    val filteredList = remember(transactions, searchQuery, activeTypeTab, selectedCategory) {
+    val filteredList = remember(
+        transactions,
+        searchQuery,
+        activeTypeTab,
+        selectedCategory,
+        selectedSource,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
+    ) {
         val q = searchQuery.trim()
+        val nq = noteFilterQuery.trim()
         transactions.filter { tx ->
             val typeOk = when (activeTypeTab) {
                 "all" -> true
@@ -135,6 +162,10 @@ fun LogScreen(
                 else -> tx.type == activeTypeTab
             }
             val catOk = selectedCategory == null || tx.category == selectedCategory
+            val srcOk = selectedSource == null || tx.source == selectedSource
+            val partyOk = selectedParty == null || tx.debtParty.trim() == selectedParty
+            val itemOk = selectedItem == null || tx.itemName.trim() == selectedItem
+            val noteOk = nq.isEmpty() || tx.note.contains(nq, ignoreCase = true)
             val searchOk = q.isEmpty() ||
                 tx.category.contains(q, ignoreCase = true) ||
                 tx.source.contains(q, ignoreCase = true) ||
@@ -142,14 +173,45 @@ fun LogScreen(
                 tx.itemName.contains(q, ignoreCase = true) ||
                 tx.debtParty.contains(q, ignoreCase = true) ||
                 formatAmountMinor(tx.amountMinor).contains(q, ignoreCase = true)
-            typeOk && catOk && searchOk
+            typeOk && catOk && srcOk && partyOk && itemOk && noteOk && searchOk
         }
     }
     val activeFilterCount = listOf(
         searchQuery.isNotBlank(),
         activeTypeTab != "all",
-        selectedCategory != null
+        selectedCategory != null,
+        selectedSource != null,
+        selectedParty != null,
+        selectedItem != null,
+        noteFilterQuery.isNotBlank()
     ).count { it }
+    val exportFilterSummary = remember(
+        activeFilterCount,
+        filteredList.size,
+        activeTypeTab,
+        selectedCategory,
+        selectedSource,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery,
+        searchQuery,
+        isArabic
+    ) {
+        if (activeFilterCount == 0) {
+            tr(isArabic, "كل العمليات المسجلة (${filteredList.size} عملية — بدون فلاتر)", "All Recorded Transactions (${filteredList.size} — No Filters)")
+        } else {
+            buildList {
+                if (activeTypeTab != "all") add(tr(isArabic, "النوع: $activeTypeTab", "Type: $activeTypeTab"))
+                selectedCategory?.let { add(tr(isArabic, "التصنيف: $it", "Category: $it")) }
+                selectedSource?.let { add(tr(isArabic, "الحساب: $it", "Account: $it")) }
+                selectedParty?.let { add(tr(isArabic, "اندفعت لمين: $it", "Paid To: $it")) }
+                selectedItem?.let { add(tr(isArabic, "عشان إيه: $it", "What For: $it")) }
+                if (noteFilterQuery.isNotBlank()) add(tr(isArabic, "ملاحظة: \"${noteFilterQuery.trim()}\"", "Note: \"${noteFilterQuery.trim()}\""))
+                if (searchQuery.isNotBlank()) add(tr(isArabic, "بحث: \"${searchQuery.trim()}\"", "Search: \"${searchQuery.trim()}\""))
+                add(tr(isArabic, "${filteredList.size} عملية مطابقة", "${filteredList.size} matching"))
+            }.joinToString(" • ")
+        }
+    }
 
     val activeCurrency = settings.defaultCurrency
     val sameCurrencyTx = remember(filteredList, activeCurrency) {
@@ -271,17 +333,13 @@ fun LogScreen(
                         transactions = filteredList,
                         preferredCurrency = activeCurrency,
                         reportTitle = tr(isArabic, "سجل العمليات المالية", "Financial Transactions Log"),
-                        filterSummary = tr(
-                            isArabic,
-                            "${filteredList.size} عملية مطابقة للفلاتر",
-                            "${filteredList.size} matching transactions"
-                        ),
+                        filterSummary = exportFilterSummary,
                         isArabic = isArabic,
                         compactLabel = true,
                         testTag = "log_export_btn",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(42.dp)
+                            .height(44.dp)
                     )
                 }
             }
@@ -305,6 +363,18 @@ fun LogScreen(
                     listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل التصنيفات", "All Categories"))) +
                         availableCategories.map { DropdownFilterOption<String?>(it, it) }
                 }
+                val sourceOptions = remember(availableSources, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الحسابات", "All Accounts"))) +
+                        availableSources.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val partyOptions = remember(availableParties, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                        availableParties.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val itemOptions = remember(availableItems, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                        availableItems.map { DropdownFilterOption<String?>(it, it) }
+                }
 
                 CollapsibleFilterDropdownCard(
                     isArabic = isArabic,
@@ -314,6 +384,10 @@ fun LogScreen(
                             searchQuery = ""
                             activeTypeTab = "all"
                             selectedCategory = null
+                            selectedSource = null
+                            selectedParty = null
+                            selectedItem = null
+                            noteFilterQuery = ""
                         }
                     } else null,
                     title = tr(isArabic, "بحث وفلاتر السجل", "Log Search & Filters"),
@@ -379,18 +453,67 @@ fun LogScreen(
                             testTag = "log_type_dropdown",
                             modifier = Modifier.weight(1f)
                         )
-                        if (availableCategories.isNotEmpty()) {
-                            SmartSingleSelectDropdown(
-                                label = tr(isArabic, "التصنيف", "Category"),
-                                selectedValue = selectedCategory,
-                                options = categoryOptions,
-                                isArabic = isArabic,
-                                onSelected = { selectedCategory = it },
-                                isHighlighted = selectedCategory != null,
-                                testTag = "log_category_dropdown",
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "التصنيف", "Category"),
+                            selectedValue = selectedCategory,
+                            options = categoryOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedCategory = it },
+                            isHighlighted = selectedCategory != null,
+                            testTag = "log_category_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "الحساب / المصدر", "Account / Source"),
+                            selectedValue = selectedSource,
+                            options = sourceOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedSource = it },
+                            isHighlighted = selectedSource != null,
+                            testTag = "log_source_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "اندفعت لمين / الجهة", "Paid To / Party"),
+                            selectedValue = selectedParty,
+                            options = partyOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedParty = it },
+                            isHighlighted = selectedParty != null,
+                            testTag = "log_party_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "عشان إيه / البند", "What For / Item"),
+                            selectedValue = selectedItem,
+                            options = itemOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedItem = it },
+                            isHighlighted = selectedItem != null,
+                            testTag = "log_item_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        SmartNoteFilterDropdown(
+                            label = tr(isArabic, "الملاحظة الإضافية", "Additional Notes"),
+                            noteQuery = noteFilterQuery,
+                            availableNotes = availableNotes,
+                            isArabic = isArabic,
+                            onNoteQueryChange = { noteFilterQuery = it },
+                            testTag = "log_note_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }

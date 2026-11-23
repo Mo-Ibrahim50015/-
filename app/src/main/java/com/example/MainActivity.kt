@@ -296,6 +296,13 @@ private fun MainAppShell(
         }
     }
 
+    // Automatically request POST_NOTIFICATIONS once on Android 13+ when notifications are enabled
+    LaunchedEffect(settings.notificationsEnabled) {
+        if (settings.notificationsEnabled) {
+            requestNotificationPermissionIfNeeded()
+        }
+    }
+
     // Safe launch wrapper: opens Device Files (DocumentsUI) for image selection with zero-permission fallbacks
     val launchPhotoPicker: () -> Unit = {
         val launchedDeviceFiles = runCatching {
@@ -328,8 +335,13 @@ private fun MainAppShell(
     }
 
     val launchSaveJsonBackupSaf: () -> Unit = {
+        val fileName = com.example.util.ExportManager.buildSmartFileName(
+            reportTitle = tr(isArabic, "نسخة احتياطية مصروفي", "Masrofy Backup"),
+            extension = "json",
+            isArabic = isArabic
+        )
         val launched = runCatching {
-            createBackupLauncher.launch("masrofy_backup.json")
+            createBackupLauncher.launch(fileName)
             true
         }.getOrDefault(false)
         if (!launched) {
@@ -339,8 +351,13 @@ private fun MainAppShell(
     }
 
     val launchSavePdfSaf: () -> Unit = {
+        val fileName = com.example.util.ExportManager.buildSmartFileName(
+            reportTitle = tr(isArabic, "تقرير مصروفي الكامل", "Masrofy Full Report"),
+            extension = "pdf",
+            isArabic = isArabic
+        )
         val launched = runCatching {
-            createPdfLauncher.launch("masrofy_report.pdf")
+            createPdfLauncher.launch(fileName)
             true
         }.getOrDefault(false)
         if (!launched) {
@@ -349,8 +366,13 @@ private fun MainAppShell(
     }
 
     val launchSaveExcelSaf: () -> Unit = {
+        val fileName = com.example.util.ExportManager.buildSmartFileName(
+            reportTitle = tr(isArabic, "سجل مصروفي الكامل", "Masrofy Full Ledger"),
+            extension = "xls",
+            isArabic = isArabic
+        )
         val launched = runCatching {
-            createExcelLauncher.launch("masrofy_ledger.xls")
+            createExcelLauncher.launch(fileName)
             true
         }.getOrDefault(false)
         if (!launched) {
@@ -359,8 +381,13 @@ private fun MainAppShell(
     }
 
     val launchSaveImageSaf: () -> Unit = {
+        val fileName = com.example.util.ExportManager.buildSmartFileName(
+            reportTitle = tr(isArabic, "ملخص حساب مصروفي", "Masrofy Account Summary"),
+            extension = "png",
+            isArabic = isArabic
+        )
         val launched = runCatching {
-            createImageLauncher.launch("masrofy_summary.png")
+            createImageLauncher.launch(fileName)
             true
         }.getOrDefault(false)
         if (!launched) {
@@ -809,6 +836,9 @@ private fun MainAppShell(
             onMarkAllAsRead = viewModel::markAllNotificationsRead,
             onToggleNotifications = viewModel::setNotificationsEnabled,
             onUpdateAlertDefaults = viewModel::updateDefaultAlertPreferences,
+            onUpdateDailyReminderConfig = viewModel::updateDailyExpenseReminderConfig,
+            onClearTransactionDueDates = viewModel::clearAllExpenseTransactionDueDates,
+            onUnifyScheduledReminderTime = viewModel::unifyScheduledReminderTime,
             onUpdateTransactionReminder = viewModel::updateTransactionReminder,
             onUpdateObligationReminder = viewModel::updateObligationReminder,
             onRequestNotificationPermission = requestNotificationPermissionIfNeeded,
@@ -1040,7 +1070,7 @@ private fun ReportsTabHost(
         onDeleteSavedFilter = viewModel::deleteSavedFilter,
         onExportPdf = viewModel::exportFilteredPdf,
         onExportImage = viewModel::exportFilteredImage,
-        onExportExcel = viewModel::exportTransactionsExcel,
+        onExportExcel = viewModel::exportFilteredExcel,
         onDeleteTransaction = viewModel::deleteTransaction,
         onToggleDebtSettled = viewModel::setDebtSettled,
         onSetObligationPaid = viewModel::setObligationPaid,

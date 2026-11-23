@@ -22,6 +22,10 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
+  androidResources {
+    localeFilters += listOf("ar", "en")
+  }
+
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
   // and updating Android apps in AI Studio.
   signingConfigs {
@@ -42,8 +46,9 @@ android {
 
   buildTypes {
     release {
-      isCrunchPngs = false
-      isMinifyEnabled = false
+      isCrunchPngs = true
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -67,6 +72,20 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
+  }
+  packaging {
+    resources {
+      excludes += listOf(
+        "DebugProbesKt.bin",
+        "kotlin-tooling-metadata.json",
+        "META-INF/LICENSE*",
+        "META-INF/NOTICE*",
+        "META-INF/AL2.0",
+        "META-INF/LGPL2.1",
+        "META-INF/*.version",
+        "google/**/*.proto"
+      )
+    }
   }
 }
 
@@ -96,7 +115,7 @@ dependencies {
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
-  implementation(libs.androidx.compose.ui.tooling.preview)
+  // implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.biometric)
   // implementation(libs.androidx.datastore.preferences)

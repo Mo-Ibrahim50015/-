@@ -19,13 +19,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Smartphone
@@ -96,7 +100,7 @@ private data class ScheduledAlertRow(
  * 3. مواعيد السداد (All upcoming dated payments & obligations with per-item settings button)
  * 4. خطوات الأذونات (Notification, Exact Alarm, and Full-Screen permissions checklist)
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun NotificationCenterSheet(
     todayCount: Int,
@@ -109,6 +113,9 @@ fun NotificationCenterSheet(
     onMarkAllAsRead: () -> Unit = {},
     onToggleNotifications: (Boolean) -> Unit,
     onUpdateAlertDefaults: (alertMode: String, fullScreen: Boolean, speakAloud: Boolean, ringtone: Boolean) -> Unit,
+    onUpdateDailyReminderConfig: (enabled: Boolean, baseTime24: String, countPerDay: Int) -> Unit = { _, _, _ -> },
+    onClearTransactionDueDates: () -> Unit = {},
+    onUnifyScheduledReminderTime: (newTime24: String) -> Unit = {},
     onUpdateTransactionReminder: (txId: Long, config: ItemReminderConfig) -> Unit,
     onUpdateObligationReminder: (obId: Long, config: ItemReminderConfig) -> Unit,
     onRequestNotificationPermission: () -> Unit,
@@ -121,6 +128,12 @@ fun NotificationCenterSheet(
     var selectedTab by remember { mutableIntStateOf(0) }
     var editingRow by remember { mutableStateOf<ScheduledAlertRow?>(null) }
     var markedAllReadLocal by remember(hasUnreadAlerts) { mutableStateOf(!hasUnreadAlerts) }
+    var showDailyTimePicker by remember { mutableStateOf(false) }
+    var showUnifyTimePicker by remember { mutableStateOf(false) }
+
+    val dailyBaseTime = remember(settings.dailyReminderTime) { settings.primaryDailyReminderTime() }
+    val dailyCount = remember(settings.dailyReminderTime) { settings.dailyReminderCount() }
+    val dailySlots = remember(settings.dailyReminderTime) { settings.dailyReminderTimesList() }
 
     val sym = currencySymbol(settings.defaultCurrency, isArabic)
     val upcomingRows = remember(transactions, obligations, isArabic) {
@@ -144,7 +157,7 @@ fun NotificationCenterSheet(
                     )
                 )
             }
-            transactions.filter { it.isDebt && !it.isDebtSettled && (it.paymentDueDate.isNotBlank() || it.hasPaymentReminder) }.forEach { tx ->
+            transactions.filter { it.isDebt && !it.isDebtSettled && it.hasPaymentReminder && it.paymentDueDate.isNotBlank() }.forEach { tx ->
                 val txSym = currencySymbol(tx.currency, isArabic)
                 add(
                     ScheduledAlertRow(
@@ -152,7 +165,7 @@ fun NotificationCenterSheet(
                         title = tx.itemName.ifBlank { tx.category },
                         amountDisplay = "${formatAmountMinor(tx.amountMinor)} $txSym",
                         party = tx.debtParty,
-                        dueDate = tx.paymentDueDate.ifBlank { tx.date },
+                        dueDate = tx.paymentDueDate,
                         dueTime = tx.paymentDueTime.ifBlank { "09:00" },
                         leadMinutes = tx.reminderLeadMinutes,
                         muted = tx.reminderMuted || !tx.hasPaymentReminder,
@@ -340,6 +353,192 @@ fun NotificationCenterSheet(
                                     colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = ext.incomeColor),
                                     modifier = Modifier.testTag("notif_master_switch")
                                 )
+                            }
+                        }
+
+                        // Daily Transaction & Expense Reminder Count + Time Card
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = ext.cardSubtleBackground,
+                            border = BorderStroke(
+                                1.dp,
+                                if (settings.dailyReminderEnabled) ext.warningAmber.copy(alpha = 0.55f) else ext.cardBorder
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Repeat,
+                                            contentDescription = null,
+                                            tint = ext.warningAmber,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Column {
+                                            Text(
+                                                text = tr(
+                                                    isArabic,
+                                                    "تذكير إضافة العمليات والمصروفات",
+                                                    "Daily Expense & Operations Reminder"
+                                                ),
+                                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = if (settings.dailyReminderEnabled) {
+                                                    tr(
+                                                        isArabic,
+                                                        "$dailyCount مرات يومياً • الأساسي ${formatTime12Hour(dailyBaseTime, true)}",
+                                                        "$dailyCount× daily • Main ${formatTime12Hour(dailyBaseTime, false)}"
+                                                    )
+                                                } else {
+                                                    tr(isArabic, "التذكير اليومي متوقف حالياً", "Daily reminder is currently off")
+                                                },
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (settings.dailyReminderEnabled) ext.incomeColor else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Switch(
+                                        checked = settings.dailyReminderEnabled,
+                                        onCheckedChange = { checked ->
+                                            if (checked) onRequestNotificationPermission()
+                                            onUpdateDailyReminderConfig(checked, dailyBaseTime, dailyCount)
+                                        },
+                                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = ext.incomeColor),
+                                        modifier = Modifier.testTag("notif_daily_expense_switch")
+                                    )
+                                }
+
+                                Text(
+                                    text = tr(
+                                        isArabic,
+                                        "عدد مرات التذكير يومياً (اختر من ١ إلى ٦ مرات):",
+                                        "How many times per day to remind you (1 to 6):"
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    (1..6).forEach { countOption ->
+                                        val selected = dailyCount == countOption
+                                        Surface(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .testTag("notif_daily_count_$countOption")
+                                                .clickable {
+                                                    onRequestNotificationPermission()
+                                                    onUpdateDailyReminderConfig(true, dailyBaseTime, countOption)
+                                                },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = if (selected) ext.heroCardBackground else MaterialTheme.colorScheme.surface,
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (selected) ext.heroCardBackground else ext.cardBorder
+                                            )
+                                        ) {
+                                            Box(
+                                                modifier = Modifier.padding(vertical = 8.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = if (isArabic) "${countOption}×" else "${countOption}x",
+                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                    color = if (selected) ext.heroCardOnBackground else MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Show exact scheduled daily reminder times
+                                if (settings.dailyReminderEnabled) {
+                                    FlowRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        dailySlots.forEach { slot ->
+                                            Surface(
+                                                shape = RoundedCornerShape(999.dp),
+                                                color = ext.incomeContainer.copy(alpha = 0.7f),
+                                                border = BorderStroke(1.dp, ext.incomeColor.copy(alpha = 0.35f))
+                                            ) {
+                                                Text(
+                                                    text = formatTime12Hour(slot, isArabic),
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                    color = ext.incomeColor,
+                                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showDailyTimePicker = true },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(40.dp)
+                                            .testTag("notif_daily_time_btn"),
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(1.dp, ext.warningAmber.copy(alpha = 0.6f))
+                                    ) {
+                                        Icon(Icons.Outlined.Schedule, contentDescription = null, tint = ext.warningAmber, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = tr(isArabic, "تغيير الوقت", "Change Time"),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = ext.warningAmber
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            PaymentNotificationManager.triggerTestAlarmPreview(
+                                                context = context,
+                                                settings = settings,
+                                                isArabic = isArabic,
+                                                customTitle = tr(isArabic, "تذكير إضافة العمليات والمصروفات", "Daily Expense Reminder"),
+                                                customAmountText = "",
+                                                customParty = tr(isArabic, "سجل مصروفي اليومي ($dailyCount مرات/يوم)", "Masrofy Log ($dailyCount×/day)")
+                                            )
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(40.dp)
+                                            .testTag("notif_daily_test_btn"),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = tr(isArabic, "تجربة التنبيه الآن", "Test Now"),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                    }
+                                }
                             }
                         }
 
@@ -593,7 +792,68 @@ fun NotificationCenterSheet(
                     }
 
                     2 -> {
-                        // TAB 3: All Scheduled Upcoming Dues with Per-Item Settings
+                        // TAB 3: All Scheduled Upcoming Dues with Unify Time & Clear Expense Due Dates actions
+                        val hasScheduledTx = upcomingRows.any { it.tx != null }
+                        if (upcomingRows.isNotEmpty()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = ext.cardSubtleBackground,
+                                border = BorderStroke(1.dp, ext.cardBorder)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showUnifyTimePicker = true },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(40.dp)
+                                            .testTag("notif_unify_time_btn"),
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(1.dp, ext.warningAmber.copy(alpha = 0.65f))
+                                    ) {
+                                        Icon(Icons.Outlined.Schedule, contentDescription = null, tint = ext.warningAmber, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = tr(
+                                                isArabic,
+                                                "توحيد وقت التذكير للمواعيد المجدولة فقط",
+                                                "Unify Reminder Time for Scheduled Items Only"
+                                            ),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = ext.warningAmber
+                                        )
+                                    }
+                                    if (hasScheduledTx) {
+                                        OutlinedButton(
+                                            onClick = onClearTransactionDueDates,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(40.dp)
+                                                .testTag("notif_clear_tx_dues_btn"),
+                                            shape = RoundedCornerShape(10.dp),
+                                            border = BorderStroke(1.dp, ext.expenseColor.copy(alpha = 0.55f))
+                                        ) {
+                                            Icon(Icons.Outlined.DeleteSweep, contentDescription = null, tint = ext.expenseColor, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = tr(
+                                                    isArabic,
+                                                    "إلغاء المواعيد من «المصاريف اللي لسه هتندفع»",
+                                                    "Clear Due Dates from Upcoming Expenses"
+                                                ),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = ext.expenseColor
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if (upcomingRows.isEmpty()) {
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
@@ -612,7 +872,7 @@ fun NotificationCenterSheet(
                                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
-                                        text = tr(isArabic, "عند إضافة مبلغ مطلوب دفعه مع تحديد تاريخ ووقت سداد سيظهر هنا مع زر إعداداته.", "Any upcoming payment with a due date/time will appear here."),
+                                        text = tr(isArabic, "عند إضافة التزام أو عملية مع تفعيل خيار موعد السداد والتنبيه سيظهر هنا فقط.", "Only items where you explicitly enabled a due date/time appear here."),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -712,6 +972,34 @@ fun NotificationCenterSheet(
                 }
             }
         }
+    }
+
+    if (showDailyTimePicker) {
+        FastTimePickerDialog(
+            initialTime24 = dailyBaseTime,
+            isArabic = isArabic,
+            title = tr(isArabic, "اختر وقت تذكير إضافة العمليات والمصروفات", "Select Daily Reminder Time"),
+            onConfirm = { picked ->
+                onRequestNotificationPermission()
+                onUpdateDailyReminderConfig(true, picked, dailyCount)
+                showDailyTimePicker = false
+            },
+            onDismiss = { showDailyTimePicker = false }
+        )
+    }
+
+    if (showUnifyTimePicker) {
+        FastTimePickerDialog(
+            initialTime24 = "09:00",
+            isArabic = isArabic,
+            title = tr(isArabic, "توحيد وقت التنبيه للمواعيد المجدولة فقط", "Unify Time for Scheduled Dues Only"),
+            onConfirm = { picked ->
+                onRequestNotificationPermission()
+                onUnifyScheduledReminderTime(picked)
+                showUnifyTimePicker = false
+            },
+            onDismiss = { showUnifyTimePicker = false }
+        )
     }
 
     editingRow?.let { row ->

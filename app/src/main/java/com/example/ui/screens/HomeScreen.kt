@@ -334,7 +334,7 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
 
-            // 2. Hero Wallet Card: «المبلغ المتاح للصرف (بدون التزامات)»
+            // 2. Hero Wallet Card: «الباقي في محفظتي بعد حساب كل الفلوس اللي اندفعت»
             item {
                 Surface(
                     modifier = Modifier
@@ -373,8 +373,8 @@ fun HomeScreen(
                                 Text(
                                     text = tr(
                                         isArabic,
-                                        "المبلغ المتاح للصرف (بدون التزامات)",
-                                        "Available to Spend (Without Obligations)"
+                                        "الباقي في محفظتي بعد حساب كل الفلوس اللي اندفعت",
+                                        "Remaining in My Wallet After All Paid Amounts"
                                     ),
                                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                                     color = ext.heroCardSubtext,
@@ -476,142 +476,7 @@ fun HomeScreen(
                 }
             }
 
-            // 3. Two Requested Complementary Key Metric Boxes: «إجمالي الدخل (متاح بدون التزامات + التزامات)» & «إجمالي التزامات مطلوب دفعها»
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // Box 1: إجمالي الدخل متاح بدون التزامات + التزامات
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .testTag("home_actual_balance_tile"),
-                        shape = RoundedCornerShape(16.dp),
-                        color = ext.cardBackground,
-                        border = BorderStroke(1.dp, ext.incomeColor.copy(alpha = 0.35f)),
-                        shadowElevation = if (ext.isDark) 1.dp else 2.5.dp
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(ext.incomeContainer),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Savings,
-                                    contentDescription = null,
-                                    tint = ext.incomeColor,
-                                    modifier = Modifier.size(21.dp)
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = tr(isArabic, "إجمالي الدخل (متاح + التزامات)", "Total Cash (Free + Due)"),
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "${formatAmountMinor(summary.cashBalanceMinor, false)} $sym",
-                                    style = AmountBodyStyle.copy(
-                                        fontSize = MaterialTheme.typography.labelMedium.fontSize,
-                                        fontWeight = FontWeight.Bold
-                                    ),
-                                    color = ext.incomeColor,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = tr(isArabic, "رصيد المحفظة الفعلي", "Actual Cash Balance"),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-
-                    // Box 2: إجمالي التزامات مطلوب دفعها
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .testTag("home_total_obligations_tile")
-                            .clickable { onNavigate(AppTab.OBLIGATIONS) },
-                        shape = RoundedCornerShape(16.dp),
-                        color = ext.cardBackground,
-                        border = BorderStroke(1.dp, ext.warningAmber.copy(alpha = 0.42f)),
-                        shadowElevation = if (ext.isDark) 1.dp else 2.5.dp
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(ext.warningAmber.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.EventNote,
-                                    contentDescription = null,
-                                    tint = ext.warningAmber,
-                                    modifier = Modifier.size(21.dp)
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = tr(isArabic, "إجمالي التزامات مطلوب دفعها", "Total Obligations Due"),
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "${formatAmountMinor(summary.totalPendingObligationsMinor, false)} $sym",
-                                    style = AmountBodyStyle.copy(
-                                        fontSize = MaterialTheme.typography.labelMedium.fontSize,
-                                        fontWeight = FontWeight.Bold
-                                    ),
-                                    color = if (summary.totalPendingObligationsMinor > 0L) ext.warningAmber else ext.incomeColor,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                val dueCount = summary.pendingScheduledObligationsCount + summary.unpaidDebtCount
-                                Text(
-                                    text = if (dueCount == 0) tr(isArabic, "لا توجد التزامات مستحقة", "No pending dues")
-                                           else tr(isArabic, "$dueCount بند مطلوب سداده", "$dueCount items due"),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 4. App Sections (4 Elevated Circular-Badge Cards matching reference design) + Amounts Hub
+            // 3. App Sections (4 Elevated Circular-Badge Cards matching reference design) + Amounts Hub
             item {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -745,8 +610,8 @@ fun HomeScreen(
                                             } else {
                                                 tr(
                                                     isArabic,
-                                                    "$totalUpcomingDueCount بند مطلوب دفعه (تخصم فوراً من المتاح للصرف)",
-                                                    "$totalUpcomingDueCount items due (deducted from free available)"
+                                                    "$totalUpcomingDueCount بند مطلوب دفعه (تخصم فوراً من الباقي في محفظتي)",
+                                                    "$totalUpcomingDueCount items due (deducted from wallet remaining)"
                                                 )
                                             },
                                             style = MaterialTheme.typography.labelSmall,
@@ -842,16 +707,6 @@ fun HomeScreen(
                                         )
                                     }
                                 }
-                                val scheduledDueTxMinor = remember(transactions, defaultCurrency) {
-                                    transactions
-                                        .filter {
-                                             it.currency == defaultCurrency &&
-                                                it.isDebt &&
-                                                !it.isDebtSettled &&
-                                                (it.hasPaymentReminder || it.paymentDueDate.isNotBlank())
-                                        }
-                                        .sumOf { it.amountMinor }
-                                }
                                 Surface(
                                     modifier = Modifier
                                         .weight(1f)
@@ -870,7 +725,7 @@ fun HomeScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = "${formatAmountMinor(summary.pendingScheduledObligationsMinor + scheduledDueTxMinor, false)} $sym",
+                                            text = "${formatAmountMinor(summary.pendingScheduledObligationsMinor, false)} $sym",
                                             style = AmountBodyStyle.copy(
                                                 fontSize = MaterialTheme.typography.labelMedium.fontSize,
                                                 fontWeight = FontWeight.Bold
@@ -1811,7 +1666,7 @@ private fun AccountingReconciliationDialog(
                     )
                     HorizontalDivider(color = ext.cardBorder.copy(alpha = 0.5f))
                     ReconciliationLine(
-                        label = tr(isArabic, "= المتاح للصرف بدون التزامات", "= Free Available Without Obligations"),
+                        label = tr(isArabic, "= الباقي في محفظتي بعد حساب كل الفلوس اللي اندفعت", "= Remaining in My Wallet After All Paid Amounts"),
                         value = "${formatAmountMinor(summary.availableWithoutObligationsMinor)} $sym",
                         valueColor = if (summary.availableWithoutObligationsMinor >= 0L) ext.incomeColor else ext.expenseColor,
                         bold = true

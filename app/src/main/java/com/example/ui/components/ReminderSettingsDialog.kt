@@ -441,8 +441,8 @@ fun ReminderSettingsDialog(
                             onSave(
                                 ItemReminderConfig(
                                     enabled = enabled,
-                                    dueDate = dueDate,
-                                    dueTime = dueTime,
+                                    dueDate = if (enabled) dueDate else "",
+                                    dueTime = if (enabled) dueTime else "",
                                     leadMinutes = leadMinutes,
                                     muted = !enabled,
                                     alertMode = alertMode,
@@ -463,6 +463,36 @@ fun ReminderSettingsDialog(
                     ) {
                         Text(tr(isArabic, "حفظ التنبيه ✓", "Save Alert ✓"), fontWeight = FontWeight.Bold)
                     }
+                }
+
+                // Clear due date / remove reminder completely
+                OutlinedButton(
+                    onClick = {
+                        onSave(
+                            ItemReminderConfig(
+                                enabled = false,
+                                dueDate = "",
+                                dueTime = "",
+                                leadMinutes = 0,
+                                muted = true,
+                                alertMode = alertMode,
+                                fullScreen = fullScreen,
+                                speakAloud = speakAloud
+                            )
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
+                        .testTag("item_reminder_clear_btn"),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, ext.expenseColor.copy(alpha = 0.55f))
+                ) {
+                    Text(
+                        text = tr(isArabic, "إلغاء الميعاد تماماً (بدون موعد سداد)", "Remove Due Date & Alarm Completely"),
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = ext.expenseColor
+                    )
                 }
             }
         }

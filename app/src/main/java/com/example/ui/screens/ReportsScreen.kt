@@ -104,6 +104,7 @@ import com.example.ui.components.ReportsAnalyticsDashboard
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
 import com.example.ui.components.SmartMultiSelectDropdown
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.components.TransactionRowItem
 import com.example.ui.theme.AmountBodyStyle
@@ -149,7 +150,7 @@ fun ReportsScreen(
     onDeleteSavedFilter: (Long) -> Unit,
     onExportPdf: (filterSummary: String) -> Unit,
     onExportImage: (filterSummary: String) -> Unit,
-    onExportExcel: (List<TransactionEntity>) -> Unit,
+    onExportExcel: (filterSummary: String) -> Unit,
     onDeleteTransaction: (Long) -> Unit,
     onToggleDebtSettled: (Long, Boolean) -> Unit,
     onSetObligationPaid: (Long, Boolean) -> Unit = { _, _ -> },
@@ -196,32 +197,75 @@ fun ReportsScreen(
     val summary = analytics.primarySummary
     val sym = currencySymbol(summary.currency, isArabic)
 
-    val activeFilterChips = remember(filter, isArabic) {
+    val availableCategories = remember(categories, allTransactions) {
+        (categories.map { it.name.trim() } + allTransactions.map { it.category.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableSources = remember(accounts, allTransactions) {
+        (accounts.map { it.name.trim() } + allTransactions.map { it.source.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableParties = remember(allTransactions, obligations) {
+        (allTransactions.map { it.debtParty.trim() } + obligations.map { it.party.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableItems = remember(allTransactions, obligations) {
+        (allTransactions.map { it.itemName.trim() } + obligations.map { it.reason.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableNotes = remember(allTransactions, obligations) {
+        (allTransactions.map { it.note.trim() } + obligations.map { it.note.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+
+    val activeFilterChips = remember(filter, isArabic, sym) {
         buildList {
+            if (!filter.hasAnyActiveFilter()) {
+                add(tr(isArabic, "كل البيانات (بدون فلاتر)", "All Data (No Filters)"))
+                return@buildList
+            }
             when (filter.type) {
                 TransactionType.EXPENSE -> add(tr(isArabic, "مصروفات", "Expenses"))
                 TransactionType.INCOME -> add(tr(isArabic, "مدخولات", "Income"))
-                else -> add(tr(isArabic, "الكل", "All"))
             }
             when (filter.debtFilter) {
                 DebtFilter.NON_DEBT -> add(tr(isArabic, "مدفوع ومكتسب", "Paid & Earned"))
                 DebtFilter.DEBT_ALL -> add(tr(isArabic, "كل المديونيات", "All Debts"))
-                DebtFilter.DEBT_UNPAID -> add(tr(isArabic, "مديونيات قائمة", "Unpaid Debts"))
-                DebtFilter.DEBT_INCOME -> add(tr(isArabic, "مديونية إيرادات قائمة", "Unpaid Income Debts"))
-                DebtFilter.DEBT_EXPENSE -> add(tr(isArabic, "مديونية مصروفات قائمة", "Unpaid Expense Debts"))
-                DebtFilter.DEBT_SETTLED -> add(tr(isArabic, "المدفوعات (الكل)", "Payments (All)"))
-                DebtFilter.PAYMENTS_INCOME -> add(tr(isArabic, "مدفوعات إيرادات مسددة", "Settled Income Payments"))
-                DebtFilter.PAYMENTS_EXPENSE -> add(tr(isArabic, "مدفوعات مصروفات مسددة", "Settled Expense Payments"))
+                DebtFilter.DEBT_UNPAID -> add(tr(isArabic, "مبالغ لسه هتندفع", "Unpaid Dues"))
+                DebtFilter.DEBT_INCOME -> add(tr(isArabic, "سلف مستلمة للرد", "Borrowed to Repay"))
+                DebtFilter.DEBT_EXPENSE -> add(tr(isArabic, "مصاريف لسه هتندفع", "Unpaid Expenses"))
+                DebtFilter.DEBT_SETTLED -> add(tr(isArabic, "المدفوعات المسددة", "Settled Payments"))
+                DebtFilter.PAYMENTS_INCOME -> add(tr(isArabic, "سلف مسددة", "Repaid Loans"))
+                DebtFilter.PAYMENTS_EXPENSE -> add(tr(isArabic, "مصاريف مسددة", "Settled Expenses"))
             }
             if (filter.currencies.isNotEmpty()) {
                 val cs = filter.currencies.joinToString("، ") { currencySymbol(it, isArabic) }
                 add(tr(isArabic, "العملة: $cs", "Currency: $cs"))
             }
             if (filter.sources.isNotEmpty()) {
-                add(tr(isArabic, "المصدر: ${filter.sources.size}", "Sources: ${filter.sources.size}"))
+                add(tr(isArabic, "المصدر: ${filter.sources.joinToString("، ")}", "Sources: ${filter.sources.joinToString(", ")}"))
             }
             if (filter.categories.isNotEmpty()) {
-                add(tr(isArabic, "التصنيف: ${filter.categories.size}", "Categories: ${filter.categories.size}"))
+                add(tr(isArabic, "التصنيف: ${filter.categories.joinToString("، ")}", "Categories: ${filter.categories.joinToString(", ")}"))
+            }
+            if (filter.parties.isNotEmpty()) {
+                add(tr(isArabic, "اندفعت لمين: ${filter.parties.joinToString("، ")}", "Paid To: ${filter.parties.joinToString(", ")}"))
+            }
+            if (filter.items.isNotEmpty()) {
+                add(tr(isArabic, "عشان إيه: ${filter.items.joinToString("، ")}", "What For: ${filter.items.joinToString(", ")}"))
+            }
+            if (filter.noteQuery.isNotBlank()) {
+                add(tr(isArabic, "ملاحظة: \"${filter.noteQuery.trim()}\"", "Note: \"${filter.noteQuery.trim()}\""))
             }
             if (filter.amountOp != ComparisonOperator.NONE && filter.amountValue1Minor != null) {
                 val v1 = formatAmountMinor(filter.amountValue1Minor, false)
@@ -297,7 +341,7 @@ fun ReportsScreen(
                             )
                         }
 
-                        // 1. Smart Collapsible Filter Dropdown Card (Saves space & auto-searchable >5 items)
+                        // 1. Smart Collapsible Searchable Dropdown Filters Card (Every filter is a searchable dropdown)
                         item {
                             val activeCount = remember(filter) {
                                 (if (filter.type != "all") 1 else 0) +
@@ -305,9 +349,12 @@ fun ReportsScreen(
                                     (if (filter.categories.isNotEmpty()) 1 else 0) +
                                     (if (filter.sources.isNotEmpty()) 1 else 0) +
                                     (if (filter.currencies.isNotEmpty()) 1 else 0) +
+                                    (if (filter.parties.isNotEmpty()) 1 else 0) +
+                                    (if (filter.items.isNotEmpty()) 1 else 0) +
+                                    (if (filter.noteQuery.isNotBlank()) 1 else 0) +
                                     (if (filter.amountOp != ComparisonOperator.NONE && filter.amountValue1Minor != null) 1 else 0) +
                                     (if (filter.datePreset != DatePreset.ALL) 1 else 0) +
-                                    (if (filter.timeOp != ComparisonOperator.NONE) 1 else 0)
+                                    (if (filter.timeOp != ComparisonOperator.NONE && filter.timeValue1.isNotBlank()) 1 else 0)
                             }
                             CollapsibleFilterDropdownCard(
                                 isArabic = isArabic,
@@ -319,7 +366,8 @@ fun ReportsScreen(
                                         onResetFilter()
                                     }
                                 } else null,
-                                title = tr(isArabic, "الفلاتر الذكية السريعة", "Smart Quick Filters"),
+                                title = tr(isArabic, "الفلاتر الذكية (قوائم منسدلة بمحرك بحث)", "Smart Searchable Dropdown Filters"),
+                                initiallyExpanded = true,
                                 testTagPrefix = "reports_filter_dropdown"
                             ) {
                                 // Save Filter / Save Default Row
@@ -393,165 +441,151 @@ fun ReportsScreen(
                                     }
                                 }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // 5-Column Compact Icon Bar
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        FilterDockIconTab(
-                            modifier = Modifier.weight(1f),
-                            icon = Icons.Outlined.SwapHoriz,
-                            label = tr(isArabic, "النوع", "Type"),
-                            selected = activeDockTab == FilterDockTab.TYPE,
-                            hasActive = filter.type != "all" || filter.debtFilter != DebtFilter.ALL || filter.categories.isNotEmpty(),
-                            onClick = { activeDockTab = FilterDockTab.TYPE }
-                        )
-                        FilterDockIconTab(
-                            modifier = Modifier.weight(1f),
-                            icon = Icons.Outlined.AccountBalance,
-                            label = tr(isArabic, "المصدر", "Source"),
-                            selected = activeDockTab == FilterDockTab.SOURCE,
-                            hasActive = filter.sources.isNotEmpty(),
-                            onClick = { activeDockTab = FilterDockTab.SOURCE }
-                        )
-                        FilterDockIconTab(
-                            modifier = Modifier.weight(1f),
-                            icon = Icons.Outlined.Payments,
-                            label = tr(isArabic, "العملة", "Currency"),
-                            selected = activeDockTab == FilterDockTab.CURRENCY,
-                            hasActive = filter.currencies.isNotEmpty(),
-                            onClick = { activeDockTab = FilterDockTab.CURRENCY }
-                        )
-                        FilterDockIconTab(
-                            modifier = Modifier.weight(1f),
-                            icon = Icons.Outlined.Calculate,
-                            label = tr(isArabic, "الشرط", "Amount"),
-                            selected = activeDockTab == FilterDockTab.OPERATOR,
-                            hasActive = filter.amountOp != ComparisonOperator.NONE && filter.amountValue1Minor != null,
-                            onClick = { activeDockTab = FilterDockTab.OPERATOR }
-                        )
-                        FilterDockIconTab(
-                            modifier = Modifier.weight(1f),
-                            icon = Icons.Outlined.CalendarMonth,
-                            label = tr(isArabic, "التاريخ", "Date"),
-                            selected = activeDockTab == FilterDockTab.DATES,
-                            hasActive = filter.datePreset != DatePreset.ALL || filter.timeOp != ComparisonOperator.NONE,
-                            onClick = { activeDockTab = FilterDockTab.DATES }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Dynamic Sub-Panel
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        color = ext.cardSubtleBackground
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            when (activeDockTab) {
-                                FilterDockTab.TYPE -> {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = tr(isArabic, "تحديد اتجاه الحركة المالية", "Transaction Direction"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Text(
-                                            text = when (filter.type) {
-                                                TransactionType.EXPENSE -> tr(isArabic, "مصروفات", "Expenses")
-                                                TransactionType.INCOME -> tr(isArabic, "مدخولات", "Income")
-                                                else -> tr(isArabic, "الكل", "All")
-                                            },
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = ext.incomeColor
+                                val directionOptions = remember(isArabic) {
+                                    listOf(
+                                        DropdownFilterOption("all", tr(isArabic, "الكل (مصروفات ومدخولات)", "All (Income & Expense)")),
+                                        DropdownFilterOption(TransactionType.EXPENSE, tr(isArabic, "مصروفات فقط", "Expenses Only")),
+                                        DropdownFilterOption(TransactionType.INCOME, tr(isArabic, "مدخولات فقط", "Income Only"))
+                                    )
+                                }
+                                val debtDropdownOptions = remember(isArabic) {
+                                    listOf(
+                                        DropdownFilterOption(DebtFilter.ALL, tr(isArabic, "الكل", "All")),
+                                        DropdownFilterOption(DebtFilter.NON_DEBT, tr(isArabic, "مدفوع ومكتسب", "Paid & Earned")),
+                                        DropdownFilterOption(DebtFilter.DEBT_UNPAID, tr(isArabic, "مبالغ لسه هتندفع", "Upcoming Unpaid")),
+                                        DropdownFilterOption(DebtFilter.DEBT_INCOME, tr(isArabic, "سلف ومبالغ مستلمة للرد", "Borrowed to Repay")),
+                                        DropdownFilterOption(DebtFilter.DEBT_EXPENSE, tr(isArabic, "مصاريف لسه هتندفع", "Unpaid Expenses")),
+                                        DropdownFilterOption(DebtFilter.DEBT_SETTLED, tr(isArabic, "المدفوعات المسددة (الكل)", "Settled Payments (All)")),
+                                        DropdownFilterOption(DebtFilter.PAYMENTS_INCOME, tr(isArabic, "سلف تم سدادها", "Repaid Loans")),
+                                        DropdownFilterOption(DebtFilter.PAYMENTS_EXPENSE, tr(isArabic, "مصاريف مؤجلة تم سدادها", "Settled Expenses")),
+                                        DropdownFilterOption(DebtFilter.DEBT_ALL, tr(isArabic, "كل العمليات المؤجلة", "All Deferred"))
+                                    )
+                                }
+                                val amountOpOptions = remember(isArabic) {
+                                    ComparisonOperator.entries.map { op ->
+                                        DropdownFilterOption(
+                                            value = op,
+                                            label = if (isArabic) op.labelAr else op.labelEn
                                         )
                                     }
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        TypeFilterOptionButton(
-                                            modifier = Modifier.weight(1f),
-                                            label = tr(isArabic, "الكل", "All"),
-                                            icon = Icons.Outlined.AllInclusive,
-                                            iconTint = null,
-                                            selected = filter.type == "all",
-                                            onClick = { onUpdateFilter { it.copy(type = "all") } }
-                                        )
-                                        TypeFilterOptionButton(
-                                            modifier = Modifier.weight(1f),
-                                            label = tr(isArabic, "مصروفات", "Expenses"),
-                                            icon = Icons.Outlined.ArrowUpward,
-                                            iconTint = ext.expenseColor,
-                                            selected = filter.type == TransactionType.EXPENSE,
-                                            onClick = { onUpdateFilter { it.copy(type = TransactionType.EXPENSE) } }
-                                        )
-                                        TypeFilterOptionButton(
-                                            modifier = Modifier.weight(1f),
-                                            label = tr(isArabic, "مدخولات", "Income"),
-                                            icon = Icons.Outlined.ArrowDownward,
-                                            iconTint = ext.incomeColor,
-                                            selected = filter.type == TransactionType.INCOME,
-                                            onClick = { onUpdateFilter { it.copy(type = TransactionType.INCOME) } }
+                                }
+                                val datePresetOptions = remember(isArabic) {
+                                    DatePreset.entries.map { preset ->
+                                        DropdownFilterOption(
+                                            value = preset,
+                                            label = if (isArabic) preset.labelAr else preset.labelEn
                                         )
                                     }
+                                }
+                                val customDateOpOptions = remember(isArabic) {
+                                    ComparisonOperator.entries.filter { it != ComparisonOperator.NONE }.map { op ->
+                                        DropdownFilterOption(
+                                            value = op,
+                                            label = if (op == ComparisonOperator.BETWEEN) tr(isArabic, "بين تاريخين (↔)", "Between Dates (↔)")
+                                            else if (isArabic) op.labelAr else op.labelEn
+                                        )
+                                    }
+                                }
+                                val timeOpOptions = remember(isArabic) {
+                                    ComparisonOperator.entries.map { op ->
+                                        DropdownFilterOption(
+                                            value = op,
+                                            label = when (op) {
+                                                ComparisonOperator.NONE -> tr(isArabic, "بدون شرط وقت", "No Time Filter")
+                                                ComparisonOperator.BETWEEN -> tr(isArabic, "بين وقتين (↔)", "Between Times (↔)")
+                                                else -> if (isArabic) op.labelAr else op.labelEn
+                                            }
+                                        )
+                                    }
+                                }
 
-                                    // Debt / Settlement Nature Searchable Dropdown (>5 items)
-                                    val debtDropdownOptions = remember(isArabic) {
-                                        listOf(
-                                            DropdownFilterOption(DebtFilter.ALL, tr(isArabic, "الكل", "All")),
-                                            DropdownFilterOption(DebtFilter.NON_DEBT, tr(isArabic, "مدفوع ومكتسب", "Paid & Earned")),
-                                            DropdownFilterOption(DebtFilter.DEBT_UNPAID, tr(isArabic, "مبالغ لسه هتندفع", "Upcoming Unpaid")),
-                                            DropdownFilterOption(DebtFilter.DEBT_INCOME, tr(isArabic, "سلف ومبالغ مستلمة للرد", "Borrowed to Repay")),
-                                            DropdownFilterOption(DebtFilter.DEBT_EXPENSE, tr(isArabic, "مصاريف لسه هتندفع", "Unpaid Expenses")),
-                                            DropdownFilterOption(DebtFilter.DEBT_SETTLED, tr(isArabic, "المدفوعات المسددة (الكل)", "Settled Payments (All)")),
-                                            DropdownFilterOption(DebtFilter.PAYMENTS_INCOME, tr(isArabic, "سلف تم سدادها", "Repaid Loans")),
-                                            DropdownFilterOption(DebtFilter.PAYMENTS_EXPENSE, tr(isArabic, "مصاريف مؤجلة تم سدادها", "Settled Expenses")),
-                                            DropdownFilterOption(DebtFilter.DEBT_ALL, tr(isArabic, "كل العمليات المؤجلة", "All Deferred"))
-                                        )
-                                    }
+                                // Row 1: Direction + Settlement Status
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
                                     SmartSingleSelectDropdown(
-                                        label = tr(isArabic, "حالة السداد والمبالغ المؤجلة", "Payment & Debt Status"),
+                                        label = tr(isArabic, "اتجاه الحركة", "Direction"),
+                                        selectedValue = filter.type,
+                                        options = directionOptions,
+                                        isArabic = isArabic,
+                                        onSelected = { t -> onUpdateFilter { it.copy(type = t) } },
+                                        isHighlighted = filter.type != "all",
+                                        testTag = "reports_direction_dropdown",
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SmartSingleSelectDropdown(
+                                        label = tr(isArabic, "حالة السداد", "Payment Status"),
                                         selectedValue = filter.debtFilter,
                                         options = debtDropdownOptions,
                                         isArabic = isArabic,
                                         onSelected = { key -> onUpdateFilter { it.copy(debtFilter = key) } },
                                         isHighlighted = filter.debtFilter != DebtFilter.ALL,
-                                        testTag = "reports_debt_status_dropdown"
+                                        testTag = "reports_debt_status_dropdown",
+                                        modifier = Modifier.weight(1f)
                                     )
-
-                                    // Multi-select Category Dropdown (>5 auto-searchable!)
-                                    if (categories.isNotEmpty()) {
-                                        SmartMultiSelectDropdown(
-                                            label = tr(isArabic, "التصنيف (اختيار متعدد)", "Category (multi-select)"),
-                                            options = categories.map { it.name }.distinct(),
-                                            selectedValues = filter.categories,
-                                            isArabic = isArabic,
-                                            onToggle = { cat ->
-                                                onUpdateFilter { f ->
-                                                    val next = if (cat in f.categories) f.categories - cat else f.categories + cat
-                                                    f.copy(categories = next)
-                                                }
-                                            },
-                                            onClear = { onUpdateFilter { it.copy(categories = emptySet()) } },
-                                            testTag = "reports_categories_dropdown"
-                                        )
-                                    }
                                 }
 
-                                FilterDockTab.SOURCE -> {
+                                // Row 2 (Prominent): Paid To (اندفعت لمين) + What For (عشان إيه)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
                                     SmartMultiSelectDropdown(
-                                        label = tr(isArabic, "طريقة الدفع أو الحساب المالي", "Accounts / Payment Sources"),
-                                        options = accounts.map { it.name }.distinct(),
+                                        label = tr(isArabic, "اندفعت لمين / الجهة", "Paid To / Party"),
+                                        options = availableParties,
+                                        selectedValues = filter.parties,
+                                        isArabic = isArabic,
+                                        onToggle = { party ->
+                                            onUpdateFilter { f ->
+                                                val next = if (party in f.parties) f.parties - party else f.parties + party
+                                                f.copy(parties = next)
+                                            }
+                                        },
+                                        onClear = { onUpdateFilter { it.copy(parties = emptySet()) } },
+                                        testTag = "reports_party_dropdown",
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SmartMultiSelectDropdown(
+                                        label = tr(isArabic, "عشان إيه / البند", "What For / Item"),
+                                        options = availableItems,
+                                        selectedValues = filter.items,
+                                        isArabic = isArabic,
+                                        onToggle = { item ->
+                                            onUpdateFilter { f ->
+                                                val next = if (item in f.items) f.items - item else f.items + item
+                                                f.copy(items = next)
+                                            }
+                                        },
+                                        onClear = { onUpdateFilter { it.copy(items = emptySet()) } },
+                                        testTag = "reports_item_dropdown",
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+
+                                // Row 3: Categories + Sources / Accounts
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    SmartMultiSelectDropdown(
+                                        label = tr(isArabic, "التصنيف", "Category"),
+                                        options = availableCategories,
+                                        selectedValues = filter.categories,
+                                        isArabic = isArabic,
+                                        onToggle = { cat ->
+                                            onUpdateFilter { f ->
+                                                val next = if (cat in f.categories) f.categories - cat else f.categories + cat
+                                                f.copy(categories = next)
+                                            }
+                                        },
+                                        onClear = { onUpdateFilter { it.copy(categories = emptySet()) } },
+                                        testTag = "reports_categories_dropdown",
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SmartMultiSelectDropdown(
+                                        label = tr(isArabic, "الحساب / المصدر", "Account / Source"),
+                                        options = availableSources,
                                         selectedValues = filter.sources,
                                         isArabic = isArabic,
                                         onToggle = { src ->
@@ -561,13 +595,27 @@ fun ReportsScreen(
                                             }
                                         },
                                         onClear = { onUpdateFilter { it.copy(sources = emptySet()) } },
-                                        testTag = "reports_sources_dropdown"
+                                        testTag = "reports_sources_dropdown",
+                                        modifier = Modifier.weight(1f)
                                     )
                                 }
 
-                                FilterDockTab.CURRENCY -> {
+                                // Row 4 (NEW): Additional Note Search Dropdown + Currency
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    SmartNoteFilterDropdown(
+                                        label = tr(isArabic, "الملاحظة الإضافية", "Additional Notes"),
+                                        noteQuery = filter.noteQuery,
+                                        availableNotes = availableNotes,
+                                        isArabic = isArabic,
+                                        onNoteQueryChange = { q -> onUpdateFilter { it.copy(noteQuery = q) } },
+                                        testTag = "reports_note_dropdown",
+                                        modifier = Modifier.weight(1f)
+                                    )
                                     SmartMultiSelectDropdown(
-                                        label = tr(isArabic, "عملة العمليات المسجلة", "Transaction Currencies"),
+                                        label = tr(isArabic, "العملة", "Currency"),
                                         options = SupportedCurrencies.map { it.code },
                                         selectedValues = filter.currencies,
                                         isArabic = isArabic,
@@ -578,261 +626,223 @@ fun ReportsScreen(
                                             }
                                         },
                                         onClear = { onUpdateFilter { it.copy(currencies = emptySet()) } },
-                                        testTag = "reports_currencies_dropdown"
+                                        testTag = "reports_currencies_dropdown",
+                                        modifier = Modifier.weight(1f)
                                     )
                                 }
 
-                                FilterDockTab.OPERATOR -> {
-                                    Text(
-                                        text = tr(isArabic, "الشرط الحسابي لقيمة المبلغ:", "Amount Comparison Operator:"),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        ComparisonOperator.entries.forEach { op ->
-                                            SelectableFilterPill(
-                                                label = if (op == ComparisonOperator.NONE) {
-                                                    tr(isArabic, "بدون", "None")
-                                                } else if (op == ComparisonOperator.BETWEEN) {
-                                                    tr(isArabic, "بين قيمتين", "Between")
-                                                } else op.symbol,
-                                                selected = filter.amountOp == op,
-                                                onClick = {
-                                                    onUpdateFilter { state ->
-                                                        if (op == ComparisonOperator.NONE) {
-                                                            amountInput1 = ""
-                                                            amountInput2 = ""
-                                                            state.copy(amountOp = op, amountValue1Minor = null, amountValue2Minor = null)
-                                                        } else {
-                                                            state.copy(amountOp = op)
-                                                        }
-                                                    }
+                                // Row 5: Amount Condition Dropdown + Date Range Dropdown
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    SmartSingleSelectDropdown(
+                                        label = tr(isArabic, "شرط المبلغ", "Amount Condition"),
+                                        selectedValue = filter.amountOp,
+                                        options = amountOpOptions,
+                                        isArabic = isArabic,
+                                        onSelected = { op ->
+                                            onUpdateFilter { state ->
+                                                if (op == ComparisonOperator.NONE) {
+                                                    amountInput1 = ""
+                                                    amountInput2 = ""
+                                                    state.copy(amountOp = op, amountValue1Minor = null, amountValue2Minor = null)
+                                                } else {
+                                                    state.copy(amountOp = op)
                                                 }
-                                            )
-                                        }
-                                    }
-                                    if (filter.amountOp != ComparisonOperator.NONE) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
+                                            }
+                                        },
+                                        isHighlighted = filter.amountOp != ComparisonOperator.NONE,
+                                        testTag = "reports_amount_op_dropdown",
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    SmartSingleSelectDropdown(
+                                        label = tr(isArabic, "الفترة الزمنية", "Date Range"),
+                                        selectedValue = filter.datePreset,
+                                        options = datePresetOptions,
+                                        isArabic = isArabic,
+                                        onSelected = { preset ->
+                                            onUpdateFilter { state ->
+                                                state.copy(
+                                                    datePreset = preset,
+                                                    dateOp = if (preset == DatePreset.CUSTOM && state.dateOp == ComparisonOperator.NONE) {
+                                                        ComparisonOperator.BETWEEN
+                                                    } else state.dateOp,
+                                                    dateValue1 = if (preset == DatePreset.CUSTOM && state.dateValue1.isBlank()) {
+                                                        currentIsoDate()
+                                                    } else state.dateValue1
+                                                )
+                                            }
+                                        },
+                                        isHighlighted = filter.datePreset != DatePreset.ALL,
+                                        testTag = "reports_date_preset_dropdown",
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+
+                                if (filter.amountOp != ComparisonOperator.NONE) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedTextField(
+                                            value = amountInput1,
+                                            onValueChange = { raw ->
+                                                amountInput1 = raw
+                                                onUpdateFilter { it.copy(amountValue1Minor = parseAmountToMinor(raw)) }
+                                            },
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            placeholder = {
+                                                Text(
+                                                    if (filter.amountOp == ComparisonOperator.BETWEEN) tr(isArabic, "من", "Min")
+                                                    else tr(isArabic, "مثال: 1000", "e.g. 1000")
+                                                )
+                                            },
+                                            suffix = { Text(sym, style = MaterialTheme.typography.labelSmall) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedContainerColor = ext.cardSubtleBackground,
+                                                unfocusedContainerColor = ext.cardSubtleBackground
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (filter.amountOp == ComparisonOperator.BETWEEN) {
                                             OutlinedTextField(
-                                                value = amountInput1,
+                                                value = amountInput2,
                                                 onValueChange = { raw ->
-                                                    amountInput1 = raw
-                                                    onUpdateFilter { it.copy(amountValue1Minor = parseAmountToMinor(raw)) }
+                                                    amountInput2 = raw
+                                                    onUpdateFilter { it.copy(amountValue2Minor = parseAmountToMinor(raw)) }
                                                 },
                                                 singleLine = true,
                                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                                placeholder = {
-                                                    Text(
-                                                        if (filter.amountOp == ComparisonOperator.BETWEEN) tr(isArabic, "من", "Min")
-                                                        else tr(isArabic, "مثال: 1000", "e.g. 1000")
-                                                    )
-                                                },
+                                                placeholder = { Text(tr(isArabic, "إلى", "Max")) },
                                                 suffix = { Text(sym, style = MaterialTheme.typography.labelSmall) },
                                                 shape = RoundedCornerShape(10.dp),
                                                 colors = OutlinedTextFieldDefaults.colors(
-                                                    focusedContainerColor = ext.cardBackground,
-                                                    unfocusedContainerColor = ext.cardBackground
+                                                    focusedContainerColor = ext.cardSubtleBackground,
+                                                    unfocusedContainerColor = ext.cardSubtleBackground
                                                 ),
                                                 modifier = Modifier.weight(1f)
                                             )
-                                            if (filter.amountOp == ComparisonOperator.BETWEEN) {
-                                                OutlinedTextField(
-                                                    value = amountInput2,
-                                                    onValueChange = { raw ->
-                                                        amountInput2 = raw
-                                                        onUpdateFilter { it.copy(amountValue2Minor = parseAmountToMinor(raw)) }
-                                                    },
-                                                    singleLine = true,
-                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                                    placeholder = { Text(tr(isArabic, "إلى", "Max")) },
-                                                    suffix = { Text(sym, style = MaterialTheme.typography.labelSmall) },
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    colors = OutlinedTextFieldDefaults.colors(
-                                                        focusedContainerColor = ext.cardBackground,
-                                                        unfocusedContainerColor = ext.cardBackground
-                                                    ),
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                            }
                                         }
                                     }
                                 }
 
-                                FilterDockTab.DATES -> {
-                                    Text(
-                                        text = tr(isArabic, "الفترة الزمنية للتقرير:", "Report Date Range:"),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                if (filter.datePreset == DatePreset.CUSTOM) {
+                                    SmartSingleSelectDropdown(
+                                        label = tr(isArabic, "شرط التاريخ المخصص", "Custom Date Condition"),
+                                        selectedValue = if (filter.dateOp == ComparisonOperator.NONE) ComparisonOperator.BETWEEN else filter.dateOp,
+                                        options = customDateOpOptions,
+                                        isArabic = isArabic,
+                                        onSelected = { op -> onUpdateFilter { it.copy(dateOp = op) } },
+                                        isHighlighted = true,
+                                        testTag = "reports_custom_date_op_dropdown"
                                     )
                                     Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        DatePreset.entries.forEach { preset ->
-                                            SelectableFilterPill(
-                                                label = if (isArabic) preset.labelAr else preset.labelEn,
-                                                selected = filter.datePreset == preset,
-                                                onClick = {
-                                                    onUpdateFilter { state ->
-                                                        state.copy(
-                                                            datePreset = preset,
-                                                            dateOp = if (preset == DatePreset.CUSTOM && state.dateOp == ComparisonOperator.NONE) {
-                                                                ComparisonOperator.BETWEEN
-                                                            } else state.dateOp,
-                                                            dateValue1 = if (preset == DatePreset.CUSTOM && state.dateValue1.isBlank()) {
-                                                                currentIsoDate()
-                                                            } else state.dateValue1
-                                                        )
-                                                    }
-                                                }
+                                        Surface(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .clickable { activeDatePickerSlot = 1 },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = ext.cardSubtleBackground,
+                                            border = BorderStroke(1.dp, ext.cardBorder)
+                                        ) {
+                                            Text(
+                                                text = filter.dateValue1.ifBlank { tr(isArabic, "اختر التاريخ 1", "Pick Date 1") },
+                                                style = MaterialTheme.typography.labelMedium,
+                                                modifier = Modifier.padding(12.dp),
+                                                textAlign = TextAlign.Center
                                             )
                                         }
-                                    }
-
-                                    // Custom Date Operator & Pickers
-                                    if (filter.datePreset == DatePreset.CUSTOM) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState()),
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            ComparisonOperator.entries.filter { it != ComparisonOperator.NONE }.forEach { op ->
-                                                SelectableFilterPill(
-                                                    label = if (op == ComparisonOperator.BETWEEN) tr(isArabic, "بين تاريخين", "Between") else op.symbol,
-                                                    selected = filter.dateOp == op,
-                                                    onClick = { onUpdateFilter { it.copy(dateOp = op) } }
-                                                )
-                                            }
-                                        }
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
+                                        if (filter.dateOp == ComparisonOperator.BETWEEN) {
                                             Surface(
                                                 modifier = Modifier
                                                     .weight(1f)
                                                     .clip(RoundedCornerShape(10.dp))
-                                                    .clickable { activeDatePickerSlot = 1 },
+                                                    .clickable { activeDatePickerSlot = 2 },
                                                 shape = RoundedCornerShape(10.dp),
-                                                color = ext.cardBackground
+                                                color = ext.cardSubtleBackground,
+                                                border = BorderStroke(1.dp, ext.cardBorder)
                                             ) {
                                                 Text(
-                                                    text = filter.dateValue1.ifBlank { tr(isArabic, "اختر التاريخ 1", "Pick Date 1") },
+                                                    text = filter.dateValue2.ifBlank { tr(isArabic, "اختر التاريخ 2", "Pick Date 2") },
                                                     style = MaterialTheme.typography.labelMedium,
                                                     modifier = Modifier.padding(12.dp),
                                                     textAlign = TextAlign.Center
                                                 )
                                             }
-                                            if (filter.dateOp == ComparisonOperator.BETWEEN) {
-                                                Surface(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .clip(RoundedCornerShape(10.dp))
-                                                        .clickable { activeDatePickerSlot = 2 },
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    color = ext.cardBackground
-                                                ) {
-                                                    Text(
-                                                        text = filter.dateValue2.ifBlank { tr(isArabic, "اختر التاريخ 2", "Pick Date 2") },
-                                                        style = MaterialTheme.typography.labelMedium,
-                                                        modifier = Modifier.padding(12.dp),
-                                                        textAlign = TextAlign.Center
-                                                    )
-                                                }
+                                        }
+                                    }
+                                }
+
+                                // Row 6: Time Condition Dropdown
+                                SmartSingleSelectDropdown(
+                                    label = tr(isArabic, "شرط الوقت (اختياري)", "Time Condition (optional)"),
+                                    selectedValue = filter.timeOp,
+                                    options = timeOpOptions,
+                                    isArabic = isArabic,
+                                    onSelected = { op ->
+                                        onUpdateFilter { state ->
+                                            if (op == ComparisonOperator.NONE) {
+                                                state.copy(timeOp = op, timeValue1 = "", timeValue2 = "")
+                                            } else {
+                                                state.copy(
+                                                    timeOp = op,
+                                                    timeValue1 = state.timeValue1.ifBlank { "09:00" },
+                                                    timeValue2 = if (op == ComparisonOperator.BETWEEN) state.timeValue2.ifBlank { "21:00" } else state.timeValue2
+                                                )
                                             }
                                         }
-                                    }
-
-                                    // Time Filter Condition (PDF Section 8.1: Time inside Date filter!)
-                                    Text(
-                                        text = tr(isArabic, "شرط الوقت (اختياري):", "Time Condition (optional):"),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    },
+                                    isHighlighted = filter.timeOp != ComparisonOperator.NONE,
+                                    testTag = "reports_time_op_dropdown"
+                                )
+                                if (filter.timeOp != ComparisonOperator.NONE) {
                                     Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState()),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        ComparisonOperator.entries.forEach { op ->
-                                            SelectableFilterPill(
-                                                label = when (op) {
-                                                    ComparisonOperator.NONE -> tr(isArabic, "بدون", "None")
-                                                    ComparisonOperator.BETWEEN -> tr(isArabic, "بين وقتين", "Between")
-                                                    else -> op.symbol
-                                                },
-                                                selected = filter.timeOp == op,
-                                                onClick = {
-                                                    onUpdateFilter { state ->
-                                                        if (op == ComparisonOperator.NONE) {
-                                                            state.copy(timeOp = op, timeValue1 = "", timeValue2 = "")
-                                                        } else {
-                                                            state.copy(
-                                                                timeOp = op,
-                                                                timeValue1 = state.timeValue1.ifBlank { "09:00" },
-                                                                timeValue2 = if (op == ComparisonOperator.BETWEEN) state.timeValue2.ifBlank { "21:00" } else state.timeValue2
-                                                            )
-                                                        }
-                                                    }
-                                                }
+                                        Surface(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .clickable { activeTimePickerSlot = 1 },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = ext.cardSubtleBackground,
+                                            border = BorderStroke(1.dp, ext.cardBorder)
+                                        ) {
+                                            Text(
+                                                text = formatTime12Hour(filter.timeValue1.ifBlank { "09:00" }, isArabic),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                modifier = Modifier.padding(10.dp),
+                                                textAlign = TextAlign.Center
                                             )
                                         }
-                                    }
-                                    if (filter.timeOp != ComparisonOperator.NONE) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
+                                        if (filter.timeOp == ComparisonOperator.BETWEEN) {
                                             Surface(
                                                 modifier = Modifier
                                                     .weight(1f)
                                                     .clip(RoundedCornerShape(10.dp))
-                                                    .clickable { activeTimePickerSlot = 1 },
+                                                    .clickable { activeTimePickerSlot = 2 },
                                                 shape = RoundedCornerShape(10.dp),
-                                                color = ext.cardBackground
+                                                color = ext.cardSubtleBackground,
+                                                border = BorderStroke(1.dp, ext.cardBorder)
                                             ) {
                                                 Text(
-                                                    text = formatTime12Hour(filter.timeValue1.ifBlank { "09:00" }, isArabic),
+                                                    text = formatTime12Hour(filter.timeValue2.ifBlank { "21:00" }, isArabic),
                                                     style = MaterialTheme.typography.labelMedium,
                                                     modifier = Modifier.padding(10.dp),
                                                     textAlign = TextAlign.Center
                                                 )
                                             }
-                                            if (filter.timeOp == ComparisonOperator.BETWEEN) {
-                                                Surface(
-                                                    modifier = Modifier
-                                                        .weight(1f)
-                                                        .clip(RoundedCornerShape(10.dp))
-                                                        .clickable { activeTimePickerSlot = 2 },
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    color = ext.cardBackground
-                                                ) {
-                                                    Text(
-                                                        text = formatTime12Hour(filter.timeValue2.ifBlank { "21:00" }, isArabic),
-                                                        style = MaterialTheme.typography.labelMedium,
-                                                        modifier = Modifier.padding(10.dp),
-                                                        textAlign = TextAlign.Center
-                                                    )
-                                                }
-                                            }
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
 
                     // Saved Filters Strip (if any saved filters exist)
                     if (savedFilters.isNotEmpty()) {
@@ -943,9 +953,13 @@ fun ReportsScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ExportDownloadButton(
                         transactions = analytics.filteredTransactions,
-                        obligations = obligations,
+                        obligations = analytics.filteredObligations,
                         preferredCurrency = summary.currency.ifBlank { settings.defaultCurrency },
-                        reportTitle = tr(isArabic, "تقرير مصروفي المفلتر", "Masrofy Filtered Report"),
+                        reportTitle = if (filter.hasAnyActiveFilter()) {
+                            tr(isArabic, "تقرير مصروفي المفلتر", "Masrofy Filtered Report")
+                        } else {
+                            tr(isArabic, "تقرير مصروفي الكامل", "Masrofy Complete Report")
+                        },
                         filterSummary = filterSummaryText,
                         isArabic = isArabic,
                         modifier = Modifier.fillMaxWidth(),
@@ -955,7 +969,7 @@ fun ReportsScreen(
                         isArabic = isArabic,
                         onExportPdf = { onExportPdf(filterSummaryText) },
                         onExportImage = { onExportImage(filterSummaryText) },
-                        onExportExcel = { onExportExcel(analytics.filteredTransactions) }
+                        onExportExcel = { onExportExcel(filterSummaryText) }
                     )
                 }
             }
@@ -1083,11 +1097,16 @@ fun ReportsScreen(
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 32.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        // 1. Live Filter Sync Bar (Synced with Reports Filters + Quick Controls)
+                        // 1. Live Searchable Dropdown Filter Sync Card (Synced 100% with Reports Filters)
                         item {
                             DashboardFilterSyncCard(
                                 filter = filter,
                                 activeFilterChips = activeFilterChips,
+                                availableCategories = availableCategories,
+                                availableSources = availableSources,
+                                availableParties = availableParties,
+                                availableItems = availableItems,
+                                availableNotes = availableNotes,
                                 matchingCount = analytics.filteredTransactions.size,
                                 isArabic = isArabic,
                                 onUpdateFilter = onUpdateFilter,
@@ -1160,14 +1179,30 @@ fun ReportsScreen(
                             )
                         }
 
-                        // 3. Export Filtered Dashboard Results
+                        // 3. Export Filtered Dashboard Results (Named Report & Direct Google Drive Upload)
                         item {
-                            ReportsExportToolbarCard(
-                                isArabic = isArabic,
-                                onExportPdf = { onExportPdf(filterSummaryText) },
-                                onExportImage = { onExportImage(filterSummaryText) },
-                                onExportExcel = { onExportExcel(analytics.filteredTransactions) }
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ExportDownloadButton(
+                                    transactions = analytics.filteredTransactions,
+                                    obligations = analytics.filteredObligations,
+                                    preferredCurrency = summary.currency.ifBlank { settings.defaultCurrency },
+                                    reportTitle = if (filter.hasAnyActiveFilter()) {
+                                        tr(isArabic, "داشبورد مصروفي المفلتر", "Masrofy Filtered Dashboard")
+                                    } else {
+                                        tr(isArabic, "داشبورد مصروفي الكامل", "Masrofy Complete Dashboard")
+                                    },
+                                    filterSummary = filterSummaryText,
+                                    isArabic = isArabic,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    testTag = "dashboard_universal_export_btn"
+                                )
+                                ReportsExportToolbarCard(
+                                    isArabic = isArabic,
+                                    onExportPdf = { onExportPdf(filterSummaryText) },
+                                    onExportImage = { onExportImage(filterSummaryText) },
+                                    onExportExcel = { onExportExcel(filterSummaryText) }
+                                )
+                            }
                         }
                     }
                 }
@@ -1919,6 +1954,11 @@ private fun ReportsQuickDetailTile(
 private fun DashboardFilterSyncCard(
     filter: ReportFilterState,
     activeFilterChips: List<String>,
+    availableCategories: List<String>,
+    availableSources: List<String>,
+    availableParties: List<String>,
+    availableItems: List<String>,
+    availableNotes: List<String>,
     matchingCount: Int,
     isArabic: Boolean,
     onUpdateFilter: ((ReportFilterState) -> ReportFilterState) -> Unit,
@@ -1926,8 +1966,37 @@ private fun DashboardFilterSyncCard(
     onOpenFullFilters: () -> Unit
 ) {
     val ext = LocalSereneColors.current
+    val directionOptions = remember(isArabic) {
+        listOf(
+            DropdownFilterOption("all", tr(isArabic, "الكل (مصروفات ومدخولات)", "All (Income & Expense)")),
+            DropdownFilterOption(TransactionType.EXPENSE, tr(isArabic, "مصروفات فقط", "Expenses Only")),
+            DropdownFilterOption(TransactionType.INCOME, tr(isArabic, "مدخولات فقط", "Income Only"))
+        )
+    }
+    val debtDropdownOptions = remember(isArabic) {
+        listOf(
+            DropdownFilterOption(DebtFilter.ALL, tr(isArabic, "الكل", "All")),
+            DropdownFilterOption(DebtFilter.NON_DEBT, tr(isArabic, "مدفوع ومكتسب", "Paid & Earned")),
+            DropdownFilterOption(DebtFilter.DEBT_UNPAID, tr(isArabic, "مبالغ لسه هتندفع", "Upcoming Unpaid")),
+            DropdownFilterOption(DebtFilter.DEBT_INCOME, tr(isArabic, "سلف ومبالغ مستلمة للرد", "Borrowed to Repay")),
+            DropdownFilterOption(DebtFilter.DEBT_EXPENSE, tr(isArabic, "مصاريف لسه هتندفع", "Unpaid Expenses")),
+            DropdownFilterOption(DebtFilter.DEBT_SETTLED, tr(isArabic, "المدفوعات المسددة (الكل)", "Settled Payments (All)")),
+            DropdownFilterOption(DebtFilter.PAYMENTS_INCOME, tr(isArabic, "سلف تم سدادها", "Repaid Loans")),
+            DropdownFilterOption(DebtFilter.PAYMENTS_EXPENSE, tr(isArabic, "مصاريف مؤجلة تم سدادها", "Settled Expenses")),
+            DropdownFilterOption(DebtFilter.DEBT_ALL, tr(isArabic, "كل العمليات المؤجلة", "All Deferred"))
+        )
+    }
+    val datePresetOptions = remember(isArabic) {
+        DatePreset.entries.filter { it != DatePreset.CUSTOM }.map { preset ->
+            DropdownFilterOption(
+                value = preset,
+                label = if (isArabic) preset.labelAr else preset.labelEn
+            )
+        }
+    }
+
     SereneCard(contentPadding = PaddingValues(14.dp)) {
-        // Header row: Dashboard title + sync status + "Customize Filters" shortcut
+        // Header row: Dashboard title + sync status + "All Filters" shortcut
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1991,7 +2060,7 @@ private fun DashboardFilterSyncCard(
                         modifier = Modifier.size(15.dp)
                     )
                     Text(
-                        text = tr(isArabic, "الفلاتر", "Filters"),
+                        text = tr(isArabic, "كل الفلاتر", "All Filters"),
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = ext.heroCardOnBackground
                     )
@@ -2001,74 +2070,128 @@ private fun DashboardFilterSyncCard(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Quick Type & Debt Filter Row directly synced with ReportFilterState
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            SelectableFilterPill(
-                label = tr(isArabic, "الكل", "All"),
-                selected = filter.type == "all" && filter.debtFilter == DebtFilter.ALL,
-                onClick = { onUpdateFilter { it.copy(type = "all", debtFilter = DebtFilter.ALL) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "مصروفات", "Expenses"),
-                selected = filter.type == TransactionType.EXPENSE && filter.debtFilter == DebtFilter.ALL,
-                onClick = { onUpdateFilter { it.copy(type = TransactionType.EXPENSE, debtFilter = DebtFilter.ALL) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "مدخولات", "Income"),
-                selected = filter.type == TransactionType.INCOME && filter.debtFilter == DebtFilter.ALL,
-                onClick = { onUpdateFilter { it.copy(type = TransactionType.INCOME, debtFilter = DebtFilter.ALL) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "مديونيات قائمة", "Unpaid Debts"),
-                selected = filter.debtFilter == DebtFilter.DEBT_UNPAID,
-                onClick = { onUpdateFilter { it.copy(type = "all", debtFilter = DebtFilter.DEBT_UNPAID) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "مديونية إيرادات", "Borrowed Income"),
-                selected = filter.debtFilter == DebtFilter.DEBT_INCOME,
-                onClick = { onUpdateFilter { it.copy(type = "all", debtFilter = DebtFilter.DEBT_INCOME) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "مديونية مصروفات", "Expense Debts"),
-                selected = filter.debtFilter == DebtFilter.DEBT_EXPENSE,
-                onClick = { onUpdateFilter { it.copy(type = "all", debtFilter = DebtFilter.DEBT_EXPENSE) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "المدفوعات (الكل)", "Payments (All)"),
-                selected = filter.debtFilter == DebtFilter.DEBT_SETTLED,
-                onClick = { onUpdateFilter { it.copy(type = "all", debtFilter = DebtFilter.DEBT_SETTLED) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "مدفوعات الإيرادات", "Paid Income"),
-                selected = filter.debtFilter == DebtFilter.PAYMENTS_INCOME,
-                onClick = { onUpdateFilter { it.copy(type = "all", debtFilter = DebtFilter.PAYMENTS_INCOME) } }
-            )
-            SelectableFilterPill(
-                label = tr(isArabic, "مدفوعات المصروفات", "Paid Expenses"),
-                selected = filter.debtFilter == DebtFilter.PAYMENTS_EXPENSE,
-                onClick = { onUpdateFilter { it.copy(type = "all", debtFilter = DebtFilter.PAYMENTS_EXPENSE) } }
-            )
-        }
+        // Searchable Dropdown Filters Grid synced directly with ReportFilterState
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SmartSingleSelectDropdown(
+                    label = tr(isArabic, "اتجاه الحركة", "Direction"),
+                    selectedValue = filter.type,
+                    options = directionOptions,
+                    isArabic = isArabic,
+                    onSelected = { t -> onUpdateFilter { it.copy(type = t) } },
+                    isHighlighted = filter.type != "all",
+                    testTag = "dashboard_direction_dropdown",
+                    modifier = Modifier.weight(1f)
+                )
+                SmartSingleSelectDropdown(
+                    label = tr(isArabic, "حالة السداد", "Payment Status"),
+                    selectedValue = filter.debtFilter,
+                    options = debtDropdownOptions,
+                    isArabic = isArabic,
+                    onSelected = { key -> onUpdateFilter { it.copy(debtFilter = key) } },
+                    isHighlighted = filter.debtFilter != DebtFilter.ALL,
+                    testTag = "dashboard_debt_status_dropdown",
+                    modifier = Modifier.weight(1f)
+                )
+            }
 
-        Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SmartMultiSelectDropdown(
+                    label = tr(isArabic, "اندفعت لمين / الجهة", "Paid To / Party"),
+                    options = availableParties,
+                    selectedValues = filter.parties,
+                    isArabic = isArabic,
+                    onToggle = { party ->
+                        onUpdateFilter { f ->
+                            val next = if (party in f.parties) f.parties - party else f.parties + party
+                            f.copy(parties = next)
+                        }
+                    },
+                    onClear = { onUpdateFilter { it.copy(parties = emptySet()) } },
+                    testTag = "dashboard_party_dropdown",
+                    modifier = Modifier.weight(1f)
+                )
+                SmartMultiSelectDropdown(
+                    label = tr(isArabic, "عشان إيه / البند", "What For / Item"),
+                    options = availableItems,
+                    selectedValues = filter.items,
+                    isArabic = isArabic,
+                    onToggle = { item ->
+                        onUpdateFilter { f ->
+                            val next = if (item in f.items) f.items - item else f.items + item
+                            f.copy(items = next)
+                        }
+                    },
+                    onClear = { onUpdateFilter { it.copy(items = emptySet()) } },
+                    testTag = "dashboard_item_dropdown",
+                    modifier = Modifier.weight(1f)
+                )
+            }
 
-        // Quick Date Range Strip directly synced with ReportFilterState
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            DatePreset.entries.filter { it != DatePreset.CUSTOM }.forEach { preset ->
-                SelectableFilterPill(
-                    label = if (isArabic) preset.labelAr else preset.labelEn,
-                    selected = filter.datePreset == preset,
-                    onClick = { onUpdateFilter { it.copy(datePreset = preset) } }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SmartNoteFilterDropdown(
+                    label = tr(isArabic, "الملاحظة الإضافية", "Additional Notes"),
+                    noteQuery = filter.noteQuery,
+                    availableNotes = availableNotes,
+                    isArabic = isArabic,
+                    onNoteQueryChange = { q -> onUpdateFilter { it.copy(noteQuery = q) } },
+                    testTag = "dashboard_note_dropdown",
+                    modifier = Modifier.weight(1f)
+                )
+                SmartSingleSelectDropdown(
+                    label = tr(isArabic, "الفترة الزمنية", "Date Range"),
+                    selectedValue = if (filter.datePreset == DatePreset.CUSTOM) DatePreset.ALL else filter.datePreset,
+                    options = datePresetOptions,
+                    isArabic = isArabic,
+                    onSelected = { preset -> onUpdateFilter { it.copy(datePreset = preset) } },
+                    isHighlighted = filter.datePreset != DatePreset.ALL,
+                    testTag = "dashboard_date_dropdown",
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SmartMultiSelectDropdown(
+                    label = tr(isArabic, "التصنيف", "Category"),
+                    options = availableCategories,
+                    selectedValues = filter.categories,
+                    isArabic = isArabic,
+                    onToggle = { cat ->
+                        onUpdateFilter { f ->
+                            val next = if (cat in f.categories) f.categories - cat else f.categories + cat
+                            f.copy(categories = next)
+                        }
+                    },
+                    onClear = { onUpdateFilter { it.copy(categories = emptySet()) } },
+                    testTag = "dashboard_categories_dropdown",
+                    modifier = Modifier.weight(1f)
+                )
+                SmartMultiSelectDropdown(
+                    label = tr(isArabic, "الحساب / المصدر", "Account / Source"),
+                    options = availableSources,
+                    selectedValues = filter.sources,
+                    isArabic = isArabic,
+                    onToggle = { src ->
+                        onUpdateFilter { f ->
+                            val next = if (src in f.sources) f.sources - src else f.sources + src
+                            f.copy(sources = next)
+                        }
+                    },
+                    onClear = { onUpdateFilter { it.copy(sources = emptySet()) } },
+                    testTag = "dashboard_sources_dropdown",
+                    modifier = Modifier.weight(1f)
                 )
             }
         }

@@ -44,6 +44,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class AppTab(val route: String) {
@@ -132,19 +134,7 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
         settings
     ) { allTx, allObs, filter, appSettings ->
         val filtered = applyReportFilter(allTx, filter)
-        val filteredObs = if (
-            filter.type != TransactionType.INCOME &&
-            filter.categories.isEmpty() &&
-            filter.debtFilter == DebtFilter.ALL
-        ) {
-            allObs.filter { ob ->
-                val currOk = filter.currencies.isEmpty() || ob.currency in filter.currencies
-                val srcOk = filter.sources.isEmpty() || (ob.isPaid && ob.paidSource in filter.sources)
-                currOk && srcOk
-            }
-        } else {
-            emptyList()
-        }
+        val filteredObs = applyObligationsReportFilter(allObs, filter)
         val preferredCurr = filter.currencies.firstOrNull() ?: appSettings.defaultCurrency
         computeAnalytics(filtered, preferredCurr, filteredObs)
     }
@@ -195,9 +185,9 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
         var pendingObsCnt = 0
         var dueSoonObsCnt = 0
         for (tx in allTx) {
-            if (tx.isDebt && !tx.isDebtSettled && (tx.hasPaymentReminder || tx.paymentDueDate.isNotBlank())) {
+            if (tx.isDebt && !tx.isDebtSettled && tx.hasPaymentReminder && tx.paymentDueDate.isNotBlank()) {
                 pendingObsCnt++
-                if (tx.paymentDueDate.isNotBlank() && tx.paymentDueDate <= todayIso) {
+                if (tx.paymentDueDate <= todayIso) {
                     dueSoonObsCnt++
                 }
             }
@@ -280,8 +270,9 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
                 }
             }
 
-            // Ensure notification channel and sync active obligation/payment reminders
+            // Clean any accidental unscheduled due dates & sync active payment/daily reminders
             runCatching {
+                repository.clearUnscheduledTransactionDueDates()
                 val ctx = getApplication<Application>()
                 PaymentNotificationManager.ensureChannel(ctx)
                 val persisted = repository.settings.first()
@@ -289,8 +280,25 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
                     context = ctx,
                     transactions = repository.transactions.first(),
                     obligations = repository.getAllObligationsOnce(),
-                    notificationsEnabled = persisted.notificationsEnabled
+                    notificationsEnabled = persisted.notificationsEnabled,
+                    settings = persisted
                 )
+            }
+        }
+
+        // Foreground exact-minute alarm ticker so reminders fire reliably while the app is open
+        viewModelScope.launch(Dispatchers.Default + coroutineErrorHandler) {
+            val ctx = getApplication<Application>()
+            while (isActive) {
+                delay(4_000L)
+                runCatching {
+                    PaymentNotificationManager.checkAndFireDueAlarmsNow(
+                        context = ctx,
+                        transactions = transactions.value,
+                        obligations = obligations.value,
+                        settings = settings.value
+                    )
+                }
             }
         }
     }
@@ -330,7 +338,7 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
         hasPaymentReminder: Boolean = false,
         paymentDueDate: String = "",
         paymentDueTime: String = "",
-        reminderLeadMinutes: Int = 60,
+        reminderLeadMinutes: Int = 0,
         reminderAlertMode: String = settings.value.defaultAlertMode,
         reminderFullScreen: Boolean = settings.value.fullScreenAlertsEnabled,
         reminderSpeakAloud: Boolean = settings.value.speakRemindersAloud
@@ -343,9 +351,9 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             val finalTime = if (isManualDateTime) time else currentTime24()
             val finalCategory = category.trim().ifBlank { tr(isAr(), "غير محدد", "Unspecified") }
             val finalSource = source.trim().ifBlank { tr(isAr(), "كاش / نقدي", "Cash") }
-            val cleanDueDate = if (isDebt) paymentDueDate.trim() else ""
-            val cleanDueTime = if (isDebt && cleanDueDate.isNotBlank()) paymentDueTime.trim().ifBlank { "09:00" } else ""
-            val enableReminder = isDebt && hasPaymentReminder && cleanDueDate.isNotBlank()
+            val enableReminder = isDebt && hasPaymentReminder && paymentDueDate.trim().isNotBlank()
+            val cleanDueDate = if (enableReminder) paymentDueDate.trim() else ""
+            val cleanDueTime = if (enableReminder) paymentDueTime.trim().ifBlank { "09:00" } else ""
 
             val entity = TransactionEntity(
                 type = type,
@@ -396,19 +404,20 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
     fun updateTransactionReminder(txId: Long, config: ItemReminderConfig) {
         safeIoLaunch {
             val ctx = getApplication<Application>()
+            val keepSchedule = config.enabled && config.dueDate.isNotBlank()
             repository.updateTransactionReminderSettings(
                 id = txId,
-                enabled = config.enabled,
-                dueDate = config.dueDate,
-                dueTime = config.dueTime,
+                enabled = keepSchedule,
+                dueDate = if (keepSchedule) config.dueDate else "",
+                dueTime = if (keepSchedule) config.dueTime.ifBlank { "09:00" } else "",
                 leadMinutes = config.leadMinutes.coerceAtLeast(0),
-                muted = config.muted,
+                muted = if (keepSchedule) config.muted else false,
                 alertMode = config.alertMode,
                 fullScreen = config.fullScreen,
                 speakAloud = config.speakAloud
             )
             val updated = repository.getTransactionByIdOnce(txId)
-            if (updated != null && config.enabled && !config.muted && !updated.isDebtSettled) {
+            if (updated != null && keepSchedule && !config.muted && !updated.isDebtSettled) {
                 PaymentNotificationManager.scheduleTransactionReminder(
                     context = ctx,
                     tx = updated,
@@ -418,8 +427,8 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
                 PaymentNotificationManager.cancelTransactionReminder(ctx, txId)
             }
             emitToast(
-                if (config.enabled && !config.muted) tr(isAr(), "تم حفظ إعدادات تنبيه السداد بنجاح ✓", "Payment reminder saved ✓")
-                else tr(isAr(), "تم إيقاف التنبيه لهذه العملية", "Reminder muted for this payment")
+                if (keepSchedule && !config.muted) tr(isAr(), "تم حفظ إعدادات تنبيه السداد بنجاح ✓", "Payment reminder saved ✓")
+                else tr(isAr(), "تم إلغاء الميعاد والتنبيه لهذه العملية ✓", "Schedule & alert removed for this payment ✓")
             )
         }
     }
@@ -1123,14 +1132,98 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
 
     fun setReminderSettings(enabled: Boolean, time: String, monthlyLimitMinor: Long) {
         safeIoLaunch {
+            val encodedTime = if ("*" in time) {
+                time
+            } else {
+                AppSettingsEntity.encodeDailyReminderTimeAndCount(
+                    baseTime24 = time,
+                    count = settings.value.dailyReminderCount()
+                )
+            }
             repository.updateSettings {
                 it.copy(
                     dailyReminderEnabled = enabled,
-                    dailyReminderTime = time,
+                    dailyReminderTime = encodedTime,
                     monthlyBudgetLimitMinor = monthlyLimitMinor
                 )
             }
-            emitToast(tr(isAr(), "تم حفظ إعدادات التذكير والميزانية", "Reminder & budget settings saved"))
+            val updated = repository.settings.first()
+            PaymentNotificationManager.syncDailyExpenseReminders(getApplication(), updated)
+            emitToast(tr(isAr(), "تم حفظ إعدادات التذكير والميزانية ✓", "Reminder & budget settings saved ✓"))
+        }
+    }
+
+    fun updateDailyExpenseReminderConfig(
+        enabled: Boolean,
+        baseTime24: String,
+        countPerDay: Int
+    ) {
+        safeIoLaunch {
+            val cleanCount = countPerDay.coerceIn(1, 6)
+            val encoded = AppSettingsEntity.encodeDailyReminderTimeAndCount(baseTime24, cleanCount)
+            repository.updateSettings {
+                it.copy(
+                    dailyReminderEnabled = enabled,
+                    dailyReminderTime = encoded
+                )
+            }
+            val updated = repository.settings.first()
+            PaymentNotificationManager.syncDailyExpenseReminders(getApplication(), updated)
+            emitToast(
+                if (enabled) {
+                    tr(
+                        isAr(),
+                        "تم ضبط تذكير إضافة العمليات والمصروفات ($cleanCount مرات يومياً) ✓",
+                        "Daily expense reminder updated ($cleanCount times/day) ✓"
+                    )
+                } else {
+                    tr(
+                        isAr(),
+                        "تم إيقاف تذكير إضافة العمليات اليومي",
+                        "Daily expense reminder paused"
+                    )
+                }
+            )
+        }
+    }
+
+    fun clearAllExpenseTransactionDueDates() {
+        safeIoLaunch {
+            val ctx = getApplication<Application>()
+            transactions.value.filter { it.isDebt }.forEach { tx ->
+                PaymentNotificationManager.cancelTransactionReminder(ctx, tx.id)
+            }
+            repository.clearAllDebtTransactionReminders()
+            emitToast(
+                tr(
+                    isAr(),
+                    "تم إلغاء المواعيد والتنبيهات من «المصاريف اللي لسه هتندفع» ✓",
+                    "Cleared accidental due dates from upcoming expenses ✓"
+                )
+            )
+        }
+    }
+
+    fun unifyScheduledReminderTime(newTime24: String) {
+        safeIoLaunch {
+            val ctx = getApplication<Application>()
+            val cleanTime = newTime24.trim().ifBlank { "09:00" }
+            repository.unifyScheduledReminderTimes(cleanTime, includeScheduledTransactions = true)
+            val persisted = repository.settings.first()
+            PaymentNotificationManager.syncAllReminders(
+                context = ctx,
+                transactions = repository.transactions.first(),
+                obligations = repository.getAllObligationsOnce(),
+                notificationsEnabled = persisted.notificationsEnabled,
+                settings = persisted
+            )
+            emitToast(
+                tr(
+                    isAr(),
+                    "تم توحيد وقت التنبيه للمواعيد المجدولة فقط إلى ${com.example.util.formatTime12Hour(cleanTime, true)} ✓",
+                    "Unified scheduled alerts time to ${com.example.util.formatTime12Hour(cleanTime, false)} ✓"
+                )
+            )
         }
     }
 
@@ -1215,11 +1308,13 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
     fun setNotificationsEnabled(enabled: Boolean) {
         safeIoLaunch {
             repository.updateSettings { it.copy(notificationsEnabled = enabled) }
+            val updated = repository.settings.first()
             PaymentNotificationManager.syncAllReminders(
                 context = getApplication(),
                 transactions = transactions.value,
                 obligations = obligations.value,
-                notificationsEnabled = enabled
+                notificationsEnabled = enabled,
+                settings = updated
             )
             emitToast(
                 if (enabled) tr(isAr(), "تم تفعيل الإشعارات والتنبيهات ✓", "Notifications enabled ✓")
@@ -1298,7 +1393,12 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             failureEn = "Failed to save CSV"
         ) {
             val ctx = getApplication<Application>()
-            val file = ExportManager.exportCsv(ctx, list, isAr())
+            val file = ExportManager.exportCsv(
+                context = ctx,
+                transactions = list,
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "سجل عمليات مصروفي", "Masrofy Transactions Log")
+            )
             val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "text/csv", isImage = false, isArabic = isAr())
             emitToast(
                 if (savedPath != null) tr(isAr(), "تم تنزيل CSV مباشرة: $savedPath", "CSV downloaded: $savedPath")
@@ -1317,7 +1417,12 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             failureEn = "Failed to save Excel"
         ) {
             val ctx = getApplication<Application>()
-            val file = ExportManager.exportExcelWorkbook(ctx, list, isAr())
+            val file = ExportManager.exportExcelWorkbook(
+                context = ctx,
+                transactions = list,
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "كشف عمليات مصروفي", "Masrofy Transactions Sheet")
+            )
             val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "application/vnd.ms-excel", isImage = false, isArabic = isAr())
             emitToast(
                 if (savedPath != null) tr(isAr(), "تم تنزيل ملف Excel مباشرة: $savedPath", "Excel downloaded: $savedPath")
@@ -1327,12 +1432,69 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun exportAllExcelDirect() {
-        exportTransactionsExcel(transactions.value)
+        val allTx = transactions.value
+        val allObs = obligations.value
+        if (allTx.isEmpty() && allObs.isEmpty()) {
+            emitToast(tr(isAr(), "لا توجد عمليات للتصدير حالياً", "No transactions to export"))
+            return
+        }
+        safeIoLaunch(
+            failureAr = "تعذر حفظ ملف Excel",
+            failureEn = "Failed to save Excel"
+        ) {
+            val ctx = getApplication<Application>()
+            val file = ExportManager.exportExcelWorkbook(
+                context = ctx,
+                transactions = allTx,
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "مصروفي - كل العمليات والالتزامات", "Masrofy - All Transactions & Obligations"),
+                obligations = allObs,
+                filterSummary = tr(isAr(), "كل البيانات (بدون فلاتر)", "All Data (No Filters)")
+            )
+            val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "application/vnd.ms-excel", isImage = false, isArabic = isAr())
+            emitToast(
+                if (savedPath != null) tr(isAr(), "تم تنزيل ملف Excel مباشرة: $savedPath", "Excel downloaded: $savedPath")
+                else tr(isAr(), "تعذر حفظ ملف Excel", "Failed to save Excel")
+            )
+        }
+    }
+
+    fun exportFilteredExcel(filterSummary: String) {
+        val analytics = reportAnalytics.value
+        if (analytics.filteredTransactions.isEmpty() && analytics.filteredObligations.isEmpty()) {
+            emitToast(tr(isAr(), "لا توجد نتائج مفلترة لتصديرها", "No filtered results to export"))
+            return
+        }
+        safeIoLaunch(
+            failureAr = "تعذر حفظ ملف Excel",
+            failureEn = "Failed to save Excel"
+        ) {
+            val ctx = getApplication<Application>()
+            val hasFilters = reportFilter.value.hasAnyActiveFilter()
+            val title = if (hasFilters) {
+                tr(isAr(), "تقرير مصروفي المفلتر", "Masrofy Filtered Report")
+            } else {
+                tr(isAr(), "تقرير مصروفي الكامل", "Masrofy Complete Report")
+            }
+            val file = ExportManager.exportExcelWorkbook(
+                context = ctx,
+                transactions = analytics.filteredTransactions,
+                isArabic = isAr(),
+                reportTitle = title,
+                obligations = analytics.filteredObligations,
+                filterSummary = filterSummary
+            )
+            val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "application/vnd.ms-excel", isImage = false, isArabic = isAr())
+            emitToast(
+                if (savedPath != null) tr(isAr(), "تم تنزيل ملف Excel مباشرة: $savedPath", "Excel downloaded: $savedPath")
+                else tr(isAr(), "تعذر حفظ ملف Excel", "Failed to save Excel")
+            )
+        }
     }
 
     fun exportFilteredPdf(filterSummary: String) {
         val analytics = reportAnalytics.value
-        if (analytics.filteredTransactions.isEmpty()) {
+        if (analytics.filteredTransactions.isEmpty() && analytics.filteredObligations.isEmpty()) {
             emitToast(tr(isAr(), "لا توجد نتائج مفلترة لتصديرها", "No filtered results to export"))
             return
         }
@@ -1341,7 +1503,20 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             failureEn = "Failed to save PDF"
         ) {
             val ctx = getApplication<Application>()
-            val file = ExportManager.exportPdfReport(ctx, analytics, filterSummary, isAr())
+            val hasFilters = reportFilter.value.hasAnyActiveFilter()
+            val title = if (hasFilters) {
+                tr(isAr(), "تقرير مصروفي المفلتر", "Masrofy Filtered Report")
+            } else {
+                tr(isAr(), "تقرير مصروفي الكامل", "Masrofy Complete Report")
+            }
+            val file = ExportManager.exportPdfReport(
+                context = ctx,
+                analytics = analytics,
+                filterSummary = filterSummary,
+                isArabic = isAr(),
+                reportTitle = title,
+                obligations = analytics.filteredObligations
+            )
             val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "application/pdf", isImage = false, isArabic = isAr())
             emitToast(
                 if (savedPath != null) tr(isAr(), "تم تنزيل PDF مباشرة: $savedPath", "PDF downloaded: $savedPath")
@@ -1358,10 +1533,12 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             val ctx = getApplication<Application>()
             val allAnalytics = homeAnalytics.value
             val file = ExportManager.exportPdfReport(
-                ctx,
-                allAnalytics,
-                tr(isAr(), "نسخة كاملة لكل العمليات", "Full Ledger Backup"),
-                isAr()
+                context = ctx,
+                analytics = allAnalytics,
+                filterSummary = tr(isAr(), "نسخة كاملة لكل العمليات والالتزامات (بدون فلاتر)", "Full Ledger Backup (No Filters)"),
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "تقرير مصروفي الكامل", "Masrofy Complete Report"),
+                obligations = allAnalytics.filteredObligations
             )
             val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "application/pdf", isImage = false, isArabic = isAr())
             emitToast(
@@ -1373,7 +1550,7 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
 
     fun exportFilteredImage(filterSummary: String) {
         val analytics = reportAnalytics.value
-        if (analytics.filteredTransactions.isEmpty()) {
+        if (analytics.filteredTransactions.isEmpty() && analytics.filteredObligations.isEmpty()) {
             emitToast(tr(isAr(), "لا توجد نتائج مفلترة لتصديرها", "No filtered results to export"))
             return
         }
@@ -1382,7 +1559,19 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             failureEn = "Failed to save image"
         ) {
             val ctx = getApplication<Application>()
-            val file = ExportManager.exportReportImage(ctx, analytics, filterSummary, isAr())
+            val hasFilters = reportFilter.value.hasAnyActiveFilter()
+            val title = if (hasFilters) {
+                tr(isAr(), "ملخص تقرير مصروفي المفلتر", "Masrofy Filtered Summary")
+            } else {
+                tr(isAr(), "ملخص تقرير مصروفي الكامل", "Masrofy Complete Summary")
+            }
+            val file = ExportManager.exportReportImage(
+                context = ctx,
+                analytics = analytics,
+                filterSummary = filterSummary,
+                isArabic = isAr(),
+                reportTitle = title
+            )
             val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "image/png", isImage = true, isArabic = isAr())
             emitToast(
                 if (savedPath != null) tr(isAr(), "تم حفظ الصورة مباشرة: $savedPath", "Image saved: $savedPath")
@@ -1399,10 +1588,11 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             val ctx = getApplication<Application>()
             val allAnalytics = homeAnalytics.value
             val file = ExportManager.exportReportImage(
-                ctx,
-                allAnalytics,
-                tr(isAr(), "ملخص كامل للحساب", "Full Ledger Summary"),
-                isAr()
+                context = ctx,
+                analytics = allAnalytics,
+                filterSummary = tr(isAr(), "ملخص كامل للحساب (بدون فلاتر)", "Full Ledger Summary (No Filters)"),
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "ملخص حساب مصروفي الكامل", "Masrofy Full Account Summary")
             )
             val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "image/png", isImage = true, isArabic = isAr())
             emitToast(
@@ -1420,10 +1610,12 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             val ctx = getApplication<Application>()
             val allAnalytics = homeAnalytics.value
             val file = ExportManager.exportPdfReport(
-                ctx,
-                allAnalytics,
-                tr(isAr(), "نسخة كاملة لكل العمليات", "Full Ledger Backup"),
-                isAr()
+                context = ctx,
+                analytics = allAnalytics,
+                filterSummary = tr(isAr(), "نسخة كاملة لكل العمليات والالتزامات", "Full Ledger Backup"),
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "تقرير مصروفي الكامل", "Masrofy Full Report"),
+                obligations = allAnalytics.filteredObligations
             )
             val ok = ExportManager.writeFileToUri(ctx, file, uri)
             emitToast(
@@ -1440,7 +1632,15 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
         ) {
             val ctx = getApplication<Application>()
             val list = transactions.value
-            val file = ExportManager.exportExcelWorkbook(ctx, list, isAr())
+            val allObs = obligations.value
+            val file = ExportManager.exportExcelWorkbook(
+                context = ctx,
+                transactions = list,
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "سجل مصروفي الكامل", "Masrofy Full Ledger"),
+                obligations = allObs,
+                filterSummary = tr(isAr(), "نسخة كاملة لكل البيانات (بدون فلاتر)", "Full Data Backup (No Filters)")
+            )
             val ok = ExportManager.writeFileToUri(ctx, file, uri)
             emitToast(
                 if (ok) tr(isAr(), "تم حفظ نسخة Excel بنجاح ✓", "Excel backup saved ✓")
@@ -1457,10 +1657,11 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
             val ctx = getApplication<Application>()
             val allAnalytics = homeAnalytics.value
             val file = ExportManager.exportReportImage(
-                ctx,
-                allAnalytics,
-                tr(isAr(), "ملخص كامل للحساب", "Full Ledger Summary"),
-                isAr()
+                context = ctx,
+                analytics = allAnalytics,
+                filterSummary = tr(isAr(), "ملخص كامل للحساب", "Full Ledger Summary"),
+                isArabic = isAr(),
+                reportTitle = tr(isAr(), "ملخص حساب مصروفي", "Masrofy Account Summary")
             )
             val ok = ExportManager.writeFileToUri(ctx, file, uri)
             emitToast(
@@ -1477,7 +1678,7 @@ class MizanityViewModel(application: Application) : AndroidViewModel(application
         ) {
             val ctx = getApplication<Application>()
             val json = repository.exportBackupJson()
-            val file = ExportManager.exportJsonBackupFile(ctx, json)
+            val file = ExportManager.exportJsonBackupFile(ctx, json, isArabic = isAr())
             val savedPath = ExportManager.saveToDeviceDownloads(ctx, file, "application/json", isImage = false, isArabic = isAr())
             emitToast(
                 if (savedPath != null) tr(isAr(), "تم تنزيل النسخة الاحتياطية: $savedPath", "Backup saved: $savedPath")

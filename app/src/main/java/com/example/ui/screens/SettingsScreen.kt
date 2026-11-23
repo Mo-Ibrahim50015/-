@@ -3499,6 +3499,9 @@ fun SettingsScreen(
                                 } else ""
                             )
                         }
+                        val dailyBaseTime = remember(settings.dailyReminderTime) { settings.primaryDailyReminderTime() }
+                        val dailyCount = remember(settings.dailyReminderTime) { settings.dailyReminderCount() }
+                        val dailySlots = remember(settings.dailyReminderTime) { settings.dailyReminderTimesList() }
                         SereneCard(contentPadding = PaddingValues(16.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -3507,14 +3510,14 @@ fun SettingsScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = tr(isArabic, "تذكير يومي بتسجيل المصاريف", "Daily Expense Reminder"),
+                                        text = tr(isArabic, "تذكير يومي بتسجيل العمليات والمصاريف", "Daily Expense & Operations Reminder"),
                                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
                                         text = tr(
                                             isArabic,
-                                            "الوقت المفضل: ${settings.dailyReminderTime}",
-                                            "Preferred time: ${settings.dailyReminderTime}"
+                                            "$dailyCount مرات يومياً • الوقت الأساسي: ${com.example.util.formatTime12Hour(dailyBaseTime, true)}",
+                                            "$dailyCount× daily • Main time: ${com.example.util.formatTime12Hour(dailyBaseTime, false)}"
                                         ),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = ext.incomeColor
@@ -3529,6 +3532,53 @@ fun SettingsScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = tr(isArabic, "عدد مرات التذكير في اليوم:", "Reminders per day:"),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                (1..6).forEach { cnt ->
+                                    val selected = dailyCount == cnt
+                                    Surface(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable {
+                                                val encoded = AppSettingsEntity.encodeDailyReminderTimeAndCount(dailyBaseTime, cnt)
+                                                onSetReminders(true, encoded, settings.monthlyBudgetLimitMinor)
+                                            },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (selected) ext.heroCardBackground else ext.cardSubtleBackground,
+                                        border = BorderStroke(1.dp, if (selected) ext.heroCardBackground else ext.cardBorder)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier.padding(vertical = 8.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = if (isArabic) "${cnt}×" else "${cnt}x",
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = if (selected) ext.heroCardOnBackground else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            if (settings.dailyReminderEnabled && dailySlots.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = tr(isArabic, "مواعيد اليوم: ", "Today's times: ") +
+                                        dailySlots.joinToString(" • ") { com.example.util.formatTime12Hour(it, isArabic) },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
                             TextButton(
                                 onClick = { showDailyReminderTimePicker = true }
                             ) {
@@ -3536,11 +3586,12 @@ fun SettingsScreen(
                             }
                             if (showDailyReminderTimePicker) {
                                 FastTimePickerDialog(
-                                    initialTime24 = settings.dailyReminderTime.ifBlank { "21:00" },
+                                    initialTime24 = dailyBaseTime,
                                     isArabic = isArabic,
                                     title = tr(isArabic, "اختر وقت التذكير اليومي", "Select Daily Reminder Time"),
                                     onConfirm = { picked ->
-                                        onSetReminders(settings.dailyReminderEnabled, picked, settings.monthlyBudgetLimitMinor)
+                                        val encoded = AppSettingsEntity.encodeDailyReminderTimeAndCount(picked, dailyCount)
+                                        onSetReminders(settings.dailyReminderEnabled, encoded, settings.monthlyBudgetLimitMinor)
                                         showDailyReminderTimePicker = false
                                     },
                                     onDismiss = { showDailyReminderTimePicker = false }

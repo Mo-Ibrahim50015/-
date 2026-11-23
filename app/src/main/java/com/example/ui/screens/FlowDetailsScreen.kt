@@ -63,6 +63,7 @@ import com.example.ui.components.DropdownFilterOption
 import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.components.TransactionRowItem
 import com.example.ui.theme.AmountBodyStyle
@@ -100,14 +101,42 @@ fun FlowDetailsScreen(
     var natureFilter by remember(flowType) { mutableStateOf(FlowNatureFilter.ALL) }
     var datePreset by remember(flowType) { mutableStateOf(DatePreset.ALL) }
     var selectedCategory by remember(flowType) { mutableStateOf<String?>(null) }
+    var selectedSource by remember(flowType) { mutableStateOf<String?>(null) }
+    var selectedParty by remember(flowType) { mutableStateOf<String?>(null) }
+    var selectedItem by remember(flowType) { mutableStateOf<String?>(null) }
+    var noteFilterQuery by remember(flowType) { mutableStateOf("") }
     var pendingDeleteTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
     val baseTypedList = remember(transactions, flowType) {
         transactions.filter { it.type == flowType }
     }
 
-    val filteredList = remember(baseTypedList, searchQuery, natureFilter, datePreset, selectedCategory) {
+    val availableFlowSources = remember(baseTypedList) {
+        baseTypedList.map { it.source.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableFlowParties = remember(baseTypedList) {
+        baseTypedList.map { it.debtParty.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableFlowItems = remember(baseTypedList) {
+        baseTypedList.map { it.itemName.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableFlowNotes = remember(baseTypedList) {
+        baseTypedList.map { it.note.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+
+    val filteredList = remember(
+        baseTypedList,
+        searchQuery,
+        natureFilter,
+        datePreset,
+        selectedCategory,
+        selectedSource,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
+    ) {
         val q = searchQuery.trim()
+        val nq = noteFilterQuery.trim()
         val today = currentIsoDate()
         val (weekStart, weekEnd) = currentWeekRange()
         val (monthStart, monthEnd) = currentMonthRange()
@@ -126,6 +155,10 @@ fun FlowDetailsScreen(
                 DatePreset.MONTH -> tx.date >= monthStart && tx.date <= monthEnd
             }
             val catOk = selectedCategory == null || tx.category == selectedCategory
+            val srcOk = selectedSource == null || tx.source.trim() == selectedSource
+            val partyOk = selectedParty == null || tx.debtParty.trim() == selectedParty
+            val itemOk = selectedItem == null || tx.itemName.trim() == selectedItem
+            val noteOk = nq.isEmpty() || tx.note.contains(nq, ignoreCase = true)
             val searchOk = q.isEmpty() ||
                 tx.category.contains(q, ignoreCase = true) ||
                 tx.source.contains(q, ignoreCase = true) ||
@@ -134,7 +167,7 @@ fun FlowDetailsScreen(
                 tx.debtParty.contains(q, ignoreCase = true) ||
                 formatAmountMinor(tx.amountMinor).contains(q, ignoreCase = true)
 
-            natureOk && dateOk && catOk && searchOk
+            natureOk && dateOk && catOk && srcOk && partyOk && itemOk && noteOk && searchOk
         }
     }
 
@@ -329,7 +362,11 @@ fun FlowDetailsScreen(
                     searchQuery.isNotBlank(),
                     natureFilter != FlowNatureFilter.ALL,
                     datePreset != DatePreset.ALL,
-                    selectedCategory != null
+                    selectedCategory != null,
+                    selectedSource != null,
+                    selectedParty != null,
+                    selectedItem != null,
+                    noteFilterQuery.isNotBlank()
                 ).count { it }
                 val natureOptions = remember(isIncome, isArabic) {
                     listOf(
@@ -362,6 +399,67 @@ fun FlowDetailsScreen(
                     listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل التصنيفات", "All Categories"))) +
                         availableFlowCategories.map { DropdownFilterOption<String?>(it, it) }
                 }
+                val sourceOptions = remember(availableFlowSources, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الحسابات", "All Accounts"))) +
+                        availableFlowSources.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val partyOptions = remember(availableFlowParties, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الجهات والأشخاص", "All Parties"))) +
+                        availableFlowParties.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val itemOptions = remember(availableFlowItems, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل البنود والأسباب", "All Items"))) +
+                        availableFlowItems.map { DropdownFilterOption<String?>(it, it) }
+                }
+
+                val exportFilterSummary = remember(
+                    activeFilterCount,
+                    natureFilter,
+                    datePreset,
+                    selectedCategory,
+                    selectedSource,
+                    selectedParty,
+                    selectedItem,
+                    noteFilterQuery,
+                    searchQuery,
+                    filteredList.size,
+                    totalMinor,
+                    sym,
+                    isIncome,
+                    isArabic
+                ) {
+                    if (activeFilterCount == 0) {
+                        if (isIncome) {
+                            tr(
+                                isArabic,
+                                "كل عمليات الدخل (بدون فلاتر) • ${filteredList.size} عملية • ${formatAmountMinor(totalMinor)} $sym",
+                                "All income entries (no filters) • ${filteredList.size} entries • ${formatAmountMinor(totalMinor)} $sym"
+                            )
+                        } else {
+                            tr(
+                                isArabic,
+                                "كل عمليات المصاريف (بدون فلاتر) • ${filteredList.size} عملية • ${formatAmountMinor(totalMinor)} $sym",
+                                "All expense entries (no filters) • ${filteredList.size} entries • ${formatAmountMinor(totalMinor)} $sym"
+                            )
+                        }
+                    } else {
+                        val parts = mutableListOf<String>()
+                        if (natureFilter != FlowNatureFilter.ALL) {
+                            parts += natureOptions.firstOrNull { it.value == natureFilter }?.label ?: natureFilter.name
+                        }
+                        if (datePreset != DatePreset.ALL) {
+                            parts += if (isArabic) datePreset.labelAr else datePreset.labelEn
+                        }
+                        selectedCategory?.let { parts += tr(isArabic, "التصنيف: $it", "Category: $it") }
+                        selectedSource?.let { parts += tr(isArabic, "الحساب: $it", "Account: $it") }
+                        selectedParty?.let { parts += tr(isArabic, "الجهة: $it", "Party: $it") }
+                        selectedItem?.let { parts += tr(isArabic, "عشان إيه: $it", "For: $it") }
+                        if (noteFilterQuery.isNotBlank()) parts += tr(isArabic, "الملاحظة: ${noteFilterQuery.trim()}", "Note: ${noteFilterQuery.trim()}")
+                        if (searchQuery.isNotBlank()) parts += tr(isArabic, "بحث: ${searchQuery.trim()}", "Search: ${searchQuery.trim()}")
+                        parts += tr(isArabic, "${filteredList.size} عملية مطابقة", "${filteredList.size} matching")
+                        parts.joinToString(" • ")
+                    }
+                }
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ExportDownloadButton(
@@ -372,11 +470,7 @@ fun FlowDetailsScreen(
                         } else {
                             tr(isArabic, "تفاصيل إجمالي المصاريف", "Total Expenses Details")
                         },
-                        filterSummary = tr(
-                            isArabic,
-                            "${filteredList.size} عملية مطابقة • ${formatAmountMinor(totalMinor)} $sym",
-                            "${filteredList.size} matching entries • ${formatAmountMinor(totalMinor)} $sym"
-                        ),
+                        filterSummary = exportFilterSummary,
                         isArabic = isArabic,
                         testTag = "flow_details_export_btn",
                         modifier = Modifier.fillMaxWidth()
@@ -391,6 +485,10 @@ fun FlowDetailsScreen(
                                 natureFilter = FlowNatureFilter.ALL
                                 datePreset = DatePreset.ALL
                                 selectedCategory = null
+                                selectedSource = null
+                                selectedParty = null
+                                selectedItem = null
+                                noteFilterQuery = ""
                             }
                         } else null,
                         title = tr(isArabic, "بحث وفلاتر التفاصيل", "Search & Filters"),
@@ -405,7 +503,7 @@ fun FlowDetailsScreen(
                                 .testTag("flow_detail_search_input"),
                             placeholder = {
                                 Text(
-                                    text = tr(isArabic, "ابحث بالتصنيف، المصدر، اسم الحاجة، أو المبلغ...", "Search category, account, item, amount..."),
+                                    text = tr(isArabic, "بحث سريع بالتصنيف، الجهة، البند، الملاحظة، أو المبلغ...", "Quick search category, party, item, note, amount..."),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -457,7 +555,10 @@ fun FlowDetailsScreen(
                             )
                         }
 
-                        if (availableFlowCategories.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             SmartSingleSelectDropdown(
                                 label = tr(isArabic, "التصنيف", "Category"),
                                 selectedValue = selectedCategory,
@@ -466,9 +567,56 @@ fun FlowDetailsScreen(
                                 onSelected = { selectedCategory = it },
                                 isHighlighted = selectedCategory != null,
                                 testTag = "flow_detail_category_dropdown",
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "الحساب / المصدر", "Account / Source"),
+                                selectedValue = selectedSource,
+                                options = sourceOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedSource = it },
+                                isHighlighted = selectedSource != null,
+                                testTag = "flow_detail_source_dropdown",
+                                modifier = Modifier.weight(1f)
                             )
                         }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SmartSingleSelectDropdown(
+                                label = if (isIncome) tr(isArabic, "من مين / الجهة", "From / Party")
+                                else tr(isArabic, "اندفعت لمين / الجهة", "Paid To / Party"),
+                                selectedValue = selectedParty,
+                                options = partyOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedParty = it },
+                                isHighlighted = selectedParty != null,
+                                testTag = "flow_detail_party_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "عشان إيه / البند", "What For / Item"),
+                                selectedValue = selectedItem,
+                                options = itemOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedItem = it },
+                                isHighlighted = selectedItem != null,
+                                testTag = "flow_detail_item_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        SmartNoteFilterDropdown(
+                            label = tr(isArabic, "الملاحظة الإضافية", "Additional Note"),
+                            noteQuery = noteFilterQuery,
+                            availableNotes = availableFlowNotes,
+                            isArabic = isArabic,
+                            onNoteQueryChange = { noteFilterQuery = it },
+                            testTag = "flow_detail_note_dropdown",
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             }

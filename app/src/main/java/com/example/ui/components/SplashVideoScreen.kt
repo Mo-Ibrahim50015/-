@@ -59,7 +59,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
-private const val SPLASH_MAX_DURATION_MS = 4000L
+private const val SPLASH_MAX_DURATION_MS = 4500L
 
 /**
  * Full-screen high-clarity splash video screen.

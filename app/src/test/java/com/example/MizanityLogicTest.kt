@@ -1,16 +1,19 @@
 package com.example
 
+import com.example.data.ObligationEntity
 import com.example.data.TransactionEntity
 import com.example.data.TransactionType
 import com.example.ui.ComparisonOperator
 import com.example.ui.DatePreset
 import com.example.ui.DebtFilter
 import com.example.ui.ReportFilterState
+import com.example.ui.applyObligationsReportFilter
 import com.example.ui.applyReportFilter
 import com.example.ui.computeAnalytics
 import com.example.util.formatAmountMinor
 import com.example.util.parseAmountToMinor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -264,5 +267,143 @@ class MizanityLogicTest {
             ReportFilterState(type = TransactionType.EXPENSE, debtFilter = DebtFilter.NON_DEBT)
         )
         assertEquals(listOf(10L), paidExpensesOnly.map { it.id })
+    }
+
+    @Test
+    fun partyItemAndNoteFiltersWorkOnTransactionsAndObligations() {
+        val txs = listOf(
+            TransactionEntity(
+                id = 101,
+                type = TransactionType.EXPENSE,
+                amountMinor = 45000L,
+                currency = "EGP",
+                source = "كاش / نقدي",
+                category = "فواتير والتزامات",
+                itemName = "اشتراك إنترنت",
+                debtParty = "شركة وي",
+                note = "باقة شهر نوفمبر السريعة",
+                date = "2026-11-10",
+                time = "10:00"
+            ),
+            TransactionEntity(
+                id = 102,
+                type = TransactionType.EXPENSE,
+                amountMinor = 120000L,
+                currency = "EGP",
+                source = "فودافون كاش",
+                category = "صحة وعلاج",
+                itemName = "كشف أسنان",
+                debtParty = "د. كريم",
+                note = "جلسة تنظيف ومتابعة",
+                date = "2026-11-12",
+                time = "17:30"
+            )
+        )
+        val obs = listOf(
+            ObligationEntity(
+                id = 201,
+                amountMinor = 300000L,
+                currency = "EGP",
+                reason = "إيجار الشقة",
+                party = "الحاج محمود",
+                dueDate = "2026-11-25",
+                dueTime = "12:00",
+                note = "تحويل إنستاباي قبل الظهر",
+                isPaid = false
+            ),
+            ObligationEntity(
+                id = 202,
+                amountMinor = 45000L,
+                currency = "EGP",
+                reason = "اشتراك إنترنت",
+                party = "شركة وي",
+                dueDate = "2026-11-28",
+                dueTime = "09:00",
+                note = "باقة شهر نوفمبر السريعة",
+                isPaid = true,
+                paidSource = "فودافون كاش",
+                paidDate = "2026-11-15"
+            )
+        )
+
+        // Empty filter returns ALL transactions and ALL obligations
+        val emptyFilter = ReportFilterState()
+        assertFalse(emptyFilter.hasAnyActiveFilter())
+        assertEquals(2, applyReportFilter(txs, emptyFilter).size)
+        assertEquals(2, applyObligationsReportFilter(obs, emptyFilter).size)
+
+        // Filter by party («اندفعت لمين / الجهة»)
+        val byParty = ReportFilterState(parties = setOf("شركة وي"))
+        assertTrue(byParty.hasAnyActiveFilter())
+        assertEquals(listOf(101L), applyReportFilter(txs, byParty).map { it.id })
+        assertEquals(listOf(202L), applyObligationsReportFilter(obs, byParty).map { it.id })
+
+        // Filter by item/reason («عشان إيه»)
+        val byItem = ReportFilterState(items = setOf("إيجار الشقة", "كشف أسنان"))
+        assertTrue(byItem.hasAnyActiveFilter())
+        assertEquals(listOf(102L), applyReportFilter(txs, byItem).map { it.id })
+        assertEquals(listOf(201L), applyObligationsReportFilter(obs, byItem).map { it.id })
+
+        // Filter by additional note keyword («البحث في الملاحظة الإضافية»)
+        val byNote = ReportFilterState(noteQuery = "إنستاباي")
+        assertTrue(byNote.hasAnyActiveFilter())
+        assertEquals(emptyList<Long>(), applyReportFilter(txs, byNote).map { it.id })
+        assertEquals(listOf(201L), applyObligationsReportFilter(obs, byNote).map { it.id })
+
+        val sharedNote = ReportFilterState(noteQuery = "نوفمبر")
+        assertEquals(listOf(101L), applyReportFilter(txs, sharedNote).map { it.id })
+        assertEquals(listOf(202L), applyObligationsReportFilter(obs, sharedNote).map { it.id })
+
+        // Partial keyword typed into searchable party/item dropdown matches seamlessly
+        val partialParty = ReportFilterState(parties = setOf("وي"))
+        assertEquals(listOf(101L), applyReportFilter(txs, partialParty).map { it.id })
+        assertEquals(listOf(202L), applyObligationsReportFilter(obs, partialParty).map { it.id })
+
+        // Combined party + item + note filter works with strict AND logic
+        val combined = ReportFilterState(
+            parties = setOf("شركة وي", "د. كريم"),
+            items = setOf("اشتراك إنترنت"),
+            noteQuery = "نوفمبر"
+        )
+        assertTrue(combined.hasAnyActiveFilter())
+        assertEquals(listOf(101L), applyReportFilter(txs, combined).map { it.id })
+        assertEquals(listOf(202L), applyObligationsReportFilter(obs, combined).map { it.id })
+    }
+
+    @Test
+    fun smartExportFileNameReflectsReportTitleAndActiveFilters() {
+        // 1. Filtered Arabic report includes report title + active filter subject + date + extension
+        val filteredName = com.example.util.ExportManager.buildSmartFileName(
+            reportTitle = "تقرير مصروفي المفلتر",
+            filterSummary = "اندفعت لمين: شركة وي • عشان إيه: إنترنت • 5 عملية",
+            extension = "pdf",
+            isArabic = true,
+            dateStamp = "2026-11-22"
+        )
+        assertTrue(filteredName.contains("تقرير_مصروفي_المفلتر"))
+        assertTrue(filteredName.contains("شركة_وي"))
+        assertTrue(filteredName.endsWith("_2026-11-22.pdf"))
+        assertFalse(filteredName.contains(":"))
+        assertFalse(filteredName.contains("/"))
+
+        // 2. Unfiltered report strips boilerplate "كل البيانات (بدون فلاتر)"
+        val unfilteredName = com.example.util.ExportManager.buildSmartFileName(
+            reportTitle = "تفاصيل إجمالي المصاريف",
+            filterSummary = "كل البيانات (بدون فلاتر)",
+            extension = "xls",
+            isArabic = true,
+            dateStamp = "2026-11-22"
+        )
+        assertEquals("تفاصيل_إجمالي_المصاريف_2026-11-22.xls", unfilteredName)
+
+        // 3. Custom user filename is sanitized and keeps extension cleanly without doubling
+        val customName = com.example.util.ExportManager.buildSmartFileName(
+            reportTitle = "تقرير",
+            extension = "pdf",
+            isArabic = true,
+            customFileName = "فواتير / شهر: نوفمبر.pdf",
+            dateStamp = "2026-11-22"
+        )
+        assertEquals("فواتير_شهر_نوفمبر.pdf", customName)
     }
 }

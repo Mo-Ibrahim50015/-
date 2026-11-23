@@ -93,6 +93,7 @@ import com.example.ui.components.ItemReminderConfig
 import com.example.ui.components.ReminderSettingsDialog
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
@@ -147,9 +148,13 @@ fun ObligationsScreen(
     val ext = LocalSereneColors.current
     val todayIso = remember { currentIsoDate() }
 
-    var activeTab by remember { mutableStateOf(ObligationFilterTab.PENDING) }
+    var activeTab by remember { mutableStateOf(ObligationFilterTab.ALL) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedCurrency by remember(settings.defaultCurrency) { mutableStateOf(settings.defaultCurrency) }
+    var selectedFilterCurrency by remember { mutableStateOf<String?>(null) }
+    var selectedParty by remember { mutableStateOf<String?>(null) }
+    var selectedItem by remember { mutableStateOf<String?>(null) }
+    var noteFilterQuery by remember { mutableStateOf("") }
     var showAddModal by remember { mutableStateOf(false) }
     var reminderEditObligation by remember { mutableStateOf<ObligationEntity?>(null) }
     var reminderEditTx by remember { mutableStateOf<TransactionEntity?>(null) }
@@ -164,7 +169,7 @@ fun ObligationsScreen(
     val availableCurrencies = remember(analytics.currencySummaries, obligations, transactions, settings.defaultCurrency) {
         val list = (analytics.currencySummaries.map { it.currency } +
             obligations.map { it.currency } +
-            transactions.filter { it.isDebt && (it.hasPaymentReminder || it.paymentDueDate.isNotBlank()) }.map { it.currency })
+            transactions.filter { it.isDebt && it.hasPaymentReminder && it.paymentDueDate.isNotBlank() }.map { it.currency })
             .distinct()
         if (list.isEmpty()) listOf(settings.defaultCurrency) else list
     }
@@ -177,9 +182,9 @@ fun ObligationsScreen(
     }
     val sym = currencySymbol(summary.currency.ifBlank { settings.defaultCurrency }, isArabic)
 
-    // Scheduled unpaid/paid transactions that have a due date/time set
+    // Scheduled unpaid/paid transactions that explicitly have a payment reminder & due date set
     val scheduledTransactions = remember(transactions) {
-        transactions.filter { it.isDebt && (it.hasPaymentReminder || it.paymentDueDate.isNotBlank()) }
+        transactions.filter { it.isDebt && it.hasPaymentReminder && it.paymentDueDate.isNotBlank() }
             .sortedWith(compareBy<TransactionEntity> { it.isDebtSettled }.thenBy { it.paymentDueDate.ifBlank { "9999-99-99" } }.thenBy { it.paymentDueTime })
     }
 
@@ -188,15 +193,46 @@ fun ObligationsScreen(
             .filter { !it.isDebtSettled && it.currency == effectiveCurrency }
             .sumOf { it.amountMinor }
     }
-    val pendingCount = remember(obligations, scheduledTransactions) {
-        obligations.count { !it.isPaid } + scheduledTransactions.count { !it.isDebtSettled }
+    val pendingCount = remember(obligations) {
+        obligations.count { !it.isPaid }
     }
-    val paidCount = remember(obligations, scheduledTransactions) {
-        obligations.count { it.isPaid } + scheduledTransactions.count { it.isDebtSettled }
+    val paidCount = remember(obligations) {
+        obligations.count { it.isPaid }
     }
 
-    val filteredObligations = remember(obligations, activeTab, searchQuery) {
+    val availableParties = remember(obligations, scheduledTransactions) {
+        (obligations.map { it.party } + scheduledTransactions.map { it.debtParty })
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableItems = remember(obligations, scheduledTransactions) {
+        (obligations.map { it.reason } + scheduledTransactions.map { it.itemName })
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableNotes = remember(obligations, scheduledTransactions) {
+        (obligations.map { it.note } + scheduledTransactions.map { it.note })
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+
+    val filteredObligations = remember(
+        obligations,
+        activeTab,
+        searchQuery,
+        selectedFilterCurrency,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
+    ) {
         val q = searchQuery.trim().lowercase(Locale.getDefault())
+        val nq = noteFilterQuery.trim()
         obligations.filter { ob ->
             val tabOk = when (activeTab) {
                 ObligationFilterTab.PENDING -> !ob.isPaid
@@ -204,6 +240,10 @@ fun ObligationsScreen(
                 ObligationFilterTab.ALL -> true
             }
             if (!tabOk) return@filter false
+            if (selectedFilterCurrency != null && ob.currency != selectedFilterCurrency) return@filter false
+            if (selectedParty != null && ob.party.trim() != selectedParty) return@filter false
+            if (selectedItem != null && ob.reason.trim() != selectedItem) return@filter false
+            if (nq.isNotEmpty() && !ob.note.contains(nq, ignoreCase = true)) return@filter false
             if (q.isEmpty()) return@filter true
             ob.reason.lowercase(Locale.getDefault()).contains(q) ||
                 ob.party.lowercase(Locale.getDefault()).contains(q) ||
@@ -212,8 +252,17 @@ fun ObligationsScreen(
         }
     }
 
-    val filteredScheduledTx = remember(scheduledTransactions, activeTab, searchQuery) {
+    val filteredScheduledTx = remember(
+        scheduledTransactions,
+        activeTab,
+        searchQuery,
+        selectedFilterCurrency,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
+    ) {
         val q = searchQuery.trim().lowercase(Locale.getDefault())
+        val nq = noteFilterQuery.trim()
         scheduledTransactions.filter { tx ->
             val tabOk = when (activeTab) {
                 ObligationFilterTab.PENDING -> !tx.isDebtSettled
@@ -221,12 +270,61 @@ fun ObligationsScreen(
                 ObligationFilterTab.ALL -> true
             }
             if (!tabOk) return@filter false
+            if (selectedFilterCurrency != null && tx.currency != selectedFilterCurrency) return@filter false
+            if (selectedParty != null && tx.debtParty.trim() != selectedParty) return@filter false
+            if (selectedItem != null && tx.itemName.trim() != selectedItem) return@filter false
+            if (nq.isNotEmpty() && !tx.note.contains(nq, ignoreCase = true)) return@filter false
             if (q.isEmpty()) return@filter true
             tx.itemName.lowercase(Locale.getDefault()).contains(q) ||
                 tx.debtParty.lowercase(Locale.getDefault()).contains(q) ||
                 tx.category.lowercase(Locale.getDefault()).contains(q) ||
                 tx.note.lowercase(Locale.getDefault()).contains(q) ||
                 tx.paymentDueDate.contains(q)
+        }
+    }
+
+    val activeFiltersCount = listOf(
+        activeTab != ObligationFilterTab.ALL,
+        selectedFilterCurrency != null,
+        selectedParty != null,
+        selectedItem != null,
+        noteFilterQuery.isNotBlank(),
+        searchQuery.isNotBlank()
+    ).count { it }
+
+    val exportFilterSummary = remember(
+        activeFiltersCount,
+        activeTab,
+        selectedFilterCurrency,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery,
+        searchQuery,
+        filteredObligations.size,
+        filteredScheduledTx.size,
+        isArabic
+    ) {
+        val totalMatched = filteredObligations.size + filteredScheduledTx.size
+        if (activeFiltersCount == 0) {
+            tr(
+                isArabic,
+                "كل الالتزامات المجدولة (بدون فلاتر) • $totalMatched التزام",
+                "All scheduled obligations (no filters) • $totalMatched dues"
+            )
+        } else {
+            val parts = mutableListOf<String>()
+            when (activeTab) {
+                ObligationFilterTab.PENDING -> parts += tr(isArabic, "الحالة: مطلوب دفعها قريباً", "Status: Upcoming")
+                ObligationFilterTab.PAID -> parts += tr(isArabic, "الحالة: تم دفعها", "Status: Paid")
+                ObligationFilterTab.ALL -> Unit
+            }
+            selectedFilterCurrency?.let { parts += tr(isArabic, "العملة: $it", "Currency: $it") }
+            selectedParty?.let { parts += tr(isArabic, "الجهة: $it", "Party: $it") }
+            selectedItem?.let { parts += tr(isArabic, "عشان إيه: $it", "For: $it") }
+            if (noteFilterQuery.isNotBlank()) parts += tr(isArabic, "الملاحظة: ${noteFilterQuery.trim()}", "Note: ${noteFilterQuery.trim()}")
+            if (searchQuery.isNotBlank()) parts += tr(isArabic, "بحث: ${searchQuery.trim()}", "Search: ${searchQuery.trim()}")
+            parts += tr(isArabic, "$totalMatched التزام مطابق", "$totalMatched matching")
+            parts.joinToString(" • ")
         }
     }
 
@@ -293,7 +391,7 @@ fun ObligationsScreen(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = formatAmountMinor(summary.pendingScheduledObligationsMinor + pendingScheduledTxMinor),
+                                text = formatAmountMinor(summary.pendingScheduledObligationsMinor),
                                 style = AmountDisplayStyle,
                                 color = ext.heroCardOnBackground,
                                 maxLines = 1,
@@ -305,6 +403,18 @@ fun ObligationsScreen(
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                                 color = ext.heroCardSubtext,
                                 modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+
+                        if (pendingScheduledTxMinor > 0L) {
+                            Text(
+                                text = tr(
+                                    isArabic,
+                                    "بالإضافة إلى ${formatAmountMinor(pendingScheduledTxMinor, false)} $sym مصاريف مؤجلة مفعّل لها تنبيه",
+                                    "Plus ${formatAmountMinor(pendingScheduledTxMinor, false)} $sym deferred expenses with active alerts"
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ext.heroCardSubtext
                             )
                         }
 
@@ -415,13 +525,9 @@ fun ObligationsScreen(
                             ExportDownloadButton(
                                 transactions = filteredScheduledTx,
                                 obligations = filteredObligations,
-                                preferredCurrency = effectiveCurrency,
+                                preferredCurrency = selectedFilterCurrency ?: effectiveCurrency,
                                 reportTitle = tr(isArabic, "التزامات بمواعيد سداد", "Scheduled Payment Dues"),
-                                filterSummary = tr(
-                                    isArabic,
-                                    "${filteredObligations.size + filteredScheduledTx.size} التزام مجدول",
-                                    "${filteredObligations.size + filteredScheduledTx.size} scheduled dues"
-                                ),
+                                filterSummary = exportFilterSummary,
                                 isArabic = isArabic,
                                 compactLabel = true,
                                 testTag = "obligations_export_btn"
@@ -464,21 +570,36 @@ fun ObligationsScreen(
                 }
             }
 
-            // 3. Collapsible Dropdown Filter Panel (Saves Space!)
+            // 3. Collapsible Dropdown Filter Panel (All filters in searchable dropdowns)
             item {
-                val activeFiltersCount = (if (activeTab != ObligationFilterTab.PENDING) 1 else 0) +
-                    (if (searchQuery.isNotBlank()) 1 else 0)
                 val statusLabel = when (activeTab) {
                     ObligationFilterTab.PENDING -> tr(isArabic, "قادمة ($pendingCount)", "Upcoming ($pendingCount)")
                     ObligationFilterTab.PAID -> tr(isArabic, "مدفوعة ($paidCount)", "Paid ($paidCount)")
                     ObligationFilterTab.ALL -> tr(isArabic, "الكل (${obligations.size + scheduledTransactions.size})", "All (${obligations.size + scheduledTransactions.size})")
                 }
+                val partyOptions = remember(availableParties, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الجهات والأشخاص", "All Parties"))) +
+                        availableParties.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val itemOptions = remember(availableItems, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل البنود والأسباب", "All Reasons / Items"))) +
+                        availableItems.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val currencyOptions = remember(availableCurrencies, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل العملات", "All Currencies"))) +
+                        availableCurrencies.map { DropdownFilterOption<String?>(it, "${currencySymbol(it, isArabic)} ($it)") }
+                }
+
                 CollapsibleFilterDropdownCard(
                     isArabic = isArabic,
                     activeFilterCount = activeFiltersCount,
                     onResetFilters = if (activeFiltersCount > 0) {
                         {
-                            activeTab = ObligationFilterTab.PENDING
+                            activeTab = ObligationFilterTab.ALL
+                            selectedFilterCurrency = null
+                            selectedParty = null
+                            selectedItem = null
+                            noteFilterQuery = ""
                             searchQuery = ""
                         }
                     } else null,
@@ -489,23 +610,63 @@ fun ObligationsScreen(
                         label = tr(isArabic, "حالة السداد", "Payment Status"),
                         selectedValue = activeTab,
                         options = listOf(
-                            DropdownFilterOption(ObligationFilterTab.PENDING, tr(isArabic, "مطلوب دفعها قريباً ($pendingCount)", "Upcoming Due ($pendingCount)")),
                             DropdownFilterOption(ObligationFilterTab.ALL, tr(isArabic, "كل الالتزامات والمواعيد (${obligations.size + scheduledTransactions.size})", "All Scheduled (${obligations.size + scheduledTransactions.size})")),
+                            DropdownFilterOption(ObligationFilterTab.PENDING, tr(isArabic, "مطلوب دفعها قريباً ($pendingCount)", "Upcoming Due ($pendingCount)")),
                             DropdownFilterOption(ObligationFilterTab.PAID, tr(isArabic, "تم دفعها ($paidCount)", "Paid ($paidCount)"))
                         ),
                         isArabic = isArabic,
                         onSelected = { activeTab = it },
-                        isHighlighted = activeTab != ObligationFilterTab.PENDING,
+                        isHighlighted = activeTab != ObligationFilterTab.ALL,
                         testTag = "obligations_status_dropdown"
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "هتندفع لمين / الجهة", "Paid To / Entity"),
+                            selectedValue = selectedParty,
+                            options = partyOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedParty = it },
+                            isHighlighted = selectedParty != null,
+                            testTag = "obligations_party_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "عشان إيه / السبب", "What For / Reason"),
+                            selectedValue = selectedItem,
+                            options = itemOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedItem = it },
+                            isHighlighted = selectedItem != null,
+                            testTag = "obligations_item_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    SmartNoteFilterDropdown(
+                        label = tr(isArabic, "الملاحظة الإضافية", "Additional Note"),
+                        noteQuery = noteFilterQuery,
+                        availableNotes = availableNotes,
+                        isArabic = isArabic,
+                        onNoteQueryChange = { noteFilterQuery = it },
+                        testTag = "obligations_note_dropdown",
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     if (availableCurrencies.size > 1) {
                         SmartSingleSelectDropdown(
                             label = tr(isArabic, "العملة", "Currency"),
-                            selectedValue = effectiveCurrency,
-                            options = availableCurrencies.map { DropdownFilterOption(it, it) },
+                            selectedValue = selectedFilterCurrency,
+                            options = currencyOptions,
                             isArabic = isArabic,
-                            onSelected = { selectedCurrency = it },
+                            onSelected = { chosen ->
+                                selectedFilterCurrency = chosen
+                                if (chosen != null) selectedCurrency = chosen
+                            },
+                            isHighlighted = selectedFilterCurrency != null,
                             testTag = "obligations_currency_dropdown"
                         )
                     }
@@ -534,7 +695,7 @@ fun ObligationsScreen(
                         } else null,
                         placeholder = {
                             Text(
-                                text = tr(isArabic, "ابحث باسم المبلغ، الجهة، أو تاريخ السداد...", "Search item, entity, or due date..."),
+                                text = tr(isArabic, "بحث سريع بالسبب، الجهة، الملاحظة، أو التاريخ...", "Quick search reason, entity, note, due date..."),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -1170,7 +1331,7 @@ private fun ObligationItemCard(
                             modifier = Modifier.size(12.dp)
                         )
                         Text(
-                            text = "${obligation.dueDate} • ${obligation.dueTime}",
+                            text = "${obligation.dueDate} • ${formatTime12Hour(obligation.dueTime, isArabic)}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1357,7 +1518,7 @@ internal fun AddObligationDialog(
     var dueDate by remember { mutableStateOf(currentIsoDate()) }
     var dueTime by remember { mutableStateOf("09:00") }
     var reminderEnabled by remember { mutableStateOf(true) }
-    var leadMinutes by remember { mutableIntStateOf(60) }
+    var leadMinutes by remember { mutableIntStateOf(0) }
     var alertMode by remember(settings.defaultAlertMode) { mutableStateOf(settings.defaultAlertMode) }
     var fullScreenAlert by remember(settings.fullScreenAlertsEnabled) { mutableStateOf(settings.fullScreenAlertsEnabled) }
     var speakAloud by remember(settings.speakRemindersAloud) { mutableStateOf(settings.speakRemindersAloud) }

@@ -116,6 +116,7 @@ class PaymentAlarmActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         configureLockScreenDisplay()
+        PaymentNotificationManager.stopBackgroundAlertMedia()
 
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         val amountText = intent.getStringExtra(EXTRA_AMOUNT_TEXT).orEmpty()

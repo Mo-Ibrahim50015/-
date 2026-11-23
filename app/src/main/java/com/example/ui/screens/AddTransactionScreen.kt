@@ -164,11 +164,11 @@ fun AddTransactionScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
 
-    // Dedicated Payment Due Date, Time & Alarm Settings (separate from creation/receipt time)
-    var hasPaymentReminder by remember { mutableStateOf(true) }
+    // Dedicated Payment Due Date, Time & Alarm Settings (OFF by default — only enabled when user explicitly turns it on)
+    var hasPaymentReminder by remember { mutableStateOf(false) }
     var paymentDueDate by remember { mutableStateOf(currentIsoDate()) }
     var paymentDueTime by remember { mutableStateOf("09:00") }
-    var reminderLeadMinutes by remember { mutableIntStateOf(60) }
+    var reminderLeadMinutes by remember { mutableIntStateOf(0) }
     var reminderAlertMode by remember(settings.defaultAlertMode) { mutableStateOf(settings.defaultAlertMode) }
     var reminderFullScreen by remember(settings.fullScreenAlertsEnabled) { mutableStateOf(settings.fullScreenAlertsEnabled) }
     var reminderSpeakAloud by remember(settings.speakRemindersAloud) { mutableStateOf(settings.speakRemindersAloud) }
@@ -214,10 +214,10 @@ fun AddTransactionScreen(
         itemNameText = ""
         debtPartyText = ""
         isDebt = false
-        hasPaymentReminder = true
+        hasPaymentReminder = false
         paymentDueDate = currentIsoDate()
         paymentDueTime = "09:00"
-        reminderLeadMinutes = 60
+        reminderLeadMinutes = 0
         reminderAlertMode = settings.defaultAlertMode
         reminderFullScreen = settings.fullScreenAlertsEnabled
         reminderSpeakAloud = settings.speakRemindersAloud
@@ -1331,88 +1331,17 @@ fun AddTransactionScreen(
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Dedicated Due Date & Due Time Buttons
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Surface(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .testTag("tx_due_date_picker_btn")
-                                    .clickable { showDueDatePicker = true },
-                                shape = RoundedCornerShape(12.dp),
-                                color = ext.cardSubtleBackground,
-                                border = BorderStroke(1.dp, ext.warningAmber.copy(alpha = 0.5f))
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.EditCalendar,
-                                            contentDescription = null,
-                                            tint = ext.warningAmber,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = tr(isArabic, "تاريخ السداد", "Due Date"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Text(
-                                        text = paymentDueDate,
-                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                            }
-
-                            Surface(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .testTag("tx_due_time_picker_btn")
-                                    .clickable { showDueTimePicker = true },
-                                shape = RoundedCornerShape(12.dp),
-                                color = ext.cardSubtleBackground,
-                                border = BorderStroke(1.dp, ext.warningAmber.copy(alpha = 0.5f))
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Schedule,
-                                            contentDescription = null,
-                                            tint = ext.warningAmber,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = tr(isArabic, "وقت السداد", "Due Time"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Text(
-                                        text = formatTime12Hour(paymentDueTime, isArabic),
-                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                            }
+                        if (!hasPaymentReminder) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = tr(
+                                    isArabic,
+                                    "بدون موعد سداد أو تنبيه حالياً — فعّل المفتاح بالأعلى فقط إذا كنت تريد تحديد ميعاد سداد وتنبيه.",
+                                    "No due date or alarm set — turn on the switch above only if you want to schedule a payment reminder."
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
 
                         AnimatedVisibility(visible = hasPaymentReminder) {
@@ -1422,6 +1351,87 @@ fun AddTransactionScreen(
                                     .padding(top = 12.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
+                                // Dedicated Due Date & Due Time Buttons (only shown when reminder is ON)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Surface(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .testTag("tx_due_date_picker_btn")
+                                            .clickable { showDueDatePicker = true },
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = ext.cardSubtleBackground,
+                                        border = BorderStroke(1.dp, ext.warningAmber.copy(alpha = 0.5f))
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.EditCalendar,
+                                                    contentDescription = null,
+                                                    tint = ext.warningAmber,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = tr(isArabic, "تاريخ السداد", "Due Date"),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Text(
+                                                text = paymentDueDate,
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .testTag("tx_due_time_picker_btn")
+                                            .clickable { showDueTimePicker = true },
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = ext.cardSubtleBackground,
+                                        border = BorderStroke(1.dp, ext.warningAmber.copy(alpha = 0.5f))
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Schedule,
+                                                    contentDescription = null,
+                                                    tint = ext.warningAmber,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = tr(isArabic, "وقت السداد", "Due Time"),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Text(
+                                                text = formatTime12Hour(paymentDueTime, isArabic),
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                }
                                 val leadOptions = remember(isArabic) {
                                     PaymentReminderLeadOptions.map {
                                         DropdownFilterOption(
@@ -1571,8 +1581,8 @@ fun AddTransactionScreen(
                                 itemNameText.trim(),
                                 debtPartyText.trim(),
                                 isDebt && hasPaymentReminder,
-                                if (isDebt) paymentDueDate else "",
-                                if (isDebt) paymentDueTime else "",
+                                if (isDebt && hasPaymentReminder) paymentDueDate else "",
+                                if (isDebt && hasPaymentReminder) paymentDueTime else "",
                                 reminderLeadMinutes,
                                 reminderAlertMode,
                                 reminderFullScreen,

@@ -63,6 +63,7 @@ import com.example.ui.components.DropdownFilterOption
 import com.example.ui.components.ExportDownloadButton
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
@@ -93,6 +94,10 @@ fun LifetimeMoneyScreen(
     var searchQuery by remember { mutableStateOf("") }
     var selectedSource by remember { mutableStateOf<String?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
+    var selectedParty by remember { mutableStateOf<String?>(null) }
+    var selectedItem by remember { mutableStateOf<String?>(null) }
+    var noteFilterQuery by remember { mutableStateOf("") }
+    var selectedCurrency by remember { mutableStateOf<String?>(null) }
     var pendingDeleteTx by remember { mutableStateOf<TransactionEntity?>(null) }
 
     val allAddedMoney = remember(transactions) {
@@ -106,10 +111,22 @@ fun LifetimeMoneyScreen(
     }
 
     val availableSources = remember(allAddedMoney) {
-        allAddedMoney.map { it.source }.filter { it.isNotBlank() }.distinct().sorted()
+        allAddedMoney.map { it.source.trim() }.filter { it.isNotBlank() }.distinct().sorted()
     }
     val availableCategories = remember(allAddedMoney) {
-        allAddedMoney.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+        allAddedMoney.map { it.category.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableParties = remember(allAddedMoney) {
+        allAddedMoney.map { it.debtParty.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableItems = remember(allAddedMoney) {
+        allAddedMoney.map { it.itemName.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableNotes = remember(allAddedMoney) {
+        allAddedMoney.map { it.note.trim() }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableCurrencies = remember(allAddedMoney) {
+        allAddedMoney.map { it.currency }.filter { it.isNotBlank() }.distinct().sorted()
     }
 
     val totalsByCurrency = remember(allAddedMoney, primaryCurrency) {
@@ -127,25 +144,44 @@ fun LifetimeMoneyScreen(
 
     val primaryLifetimeTotalMinor = totalsByCurrency.firstOrNull()?.second ?: 0L
 
-    val filteredList = remember(allAddedMoney, searchQuery, selectedSource, selectedCategory) {
+    val filteredList = remember(
+        allAddedMoney,
+        searchQuery,
+        selectedSource,
+        selectedCategory,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery,
+        selectedCurrency
+    ) {
         val q = searchQuery.trim()
+        val nq = noteFilterQuery.trim()
         allAddedMoney.filter { tx ->
-            val srcOk = selectedSource == null || tx.source == selectedSource
-            val catOk = selectedCategory == null || tx.category == selectedCategory
+            val srcOk = selectedSource == null || tx.source.trim() == selectedSource
+            val catOk = selectedCategory == null || tx.category.trim() == selectedCategory
+            val partyOk = selectedParty == null || tx.debtParty.trim() == selectedParty
+            val itemOk = selectedItem == null || tx.itemName.trim() == selectedItem
+            val currOk = selectedCurrency == null || tx.currency == selectedCurrency
+            val noteOk = nq.isEmpty() || tx.note.contains(nq, ignoreCase = true)
             val qOk = q.isEmpty() ||
                 tx.category.contains(q, ignoreCase = true) ||
                 tx.source.contains(q, ignoreCase = true) ||
+                tx.debtParty.contains(q, ignoreCase = true) ||
                 tx.note.contains(q, ignoreCase = true) ||
                 tx.itemName.contains(q, ignoreCase = true) ||
                 tx.date.contains(q, ignoreCase = true) ||
                 formatAmountMinor(tx.amountMinor).contains(q, ignoreCase = true)
-            srcOk && catOk && qOk
+            srcOk && catOk && partyOk && itemOk && currOk && noteOk && qOk
         }
     }
     val activeFilterCount = listOf(
         searchQuery.isNotBlank(),
         selectedSource != null,
-        selectedCategory != null
+        selectedCategory != null,
+        selectedParty != null,
+        selectedItem != null,
+        noteFilterQuery.isNotBlank(),
+        selectedCurrency != null
     ).count { it }
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -335,21 +371,61 @@ fun LifetimeMoneyScreen(
                     listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل مصادر الفلوس", "All Sources"))) +
                         availableCategories.map { DropdownFilterOption<String?>(it, it) }
                 }
+                val partyOptions = remember(availableParties, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل الجهات والأشخاص", "All Parties"))) +
+                        availableParties.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val itemOptions = remember(availableItems, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل البنود والتفاصيل", "All Items"))) +
+                        availableItems.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val currencyOptions = remember(availableCurrencies, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "كل العملات", "All Currencies"))) +
+                        availableCurrencies.map { DropdownFilterOption<String?>(it, "${currencySymbol(it, isArabic)} ($it)") }
+                }
+
+                val exportFilterSummary = remember(
+                    activeFilterCount,
+                    selectedCategory,
+                    selectedSource,
+                    selectedParty,
+                    selectedItem,
+                    noteFilterQuery,
+                    selectedCurrency,
+                    searchQuery,
+                    filteredList.size,
+                    isArabic
+                ) {
+                    if (activeFilterCount == 0) {
+                        tr(
+                            isArabic,
+                            "كل عمليات إضافة الفلوس (بدون فلاتر) • ${filteredList.size} عملية",
+                            "All money-added entries (no filters) • ${filteredList.size} entries"
+                        )
+                    } else {
+                        val parts = mutableListOf<String>()
+                        selectedCategory?.let { parts += tr(isArabic, "جات إزاي: $it", "Source: $it") }
+                        selectedSource?.let { parts += tr(isArabic, "عن طريق إيه: $it", "Channel: $it") }
+                        selectedParty?.let { parts += tr(isArabic, "الجهة: $it", "Party: $it") }
+                        selectedItem?.let { parts += tr(isArabic, "عشان إيه: $it", "For: $it") }
+                        if (noteFilterQuery.isNotBlank()) parts += tr(isArabic, "الملاحظة: ${noteFilterQuery.trim()}", "Note: ${noteFilterQuery.trim()}")
+                        selectedCurrency?.let { parts += tr(isArabic, "العملة: $it", "Currency: $it") }
+                        if (searchQuery.isNotBlank()) parts += tr(isArabic, "بحث: ${searchQuery.trim()}", "Search: ${searchQuery.trim()}")
+                        parts += tr(isArabic, "${filteredList.size} عملية مطابقة", "${filteredList.size} matching")
+                        parts.joinToString(" • ")
+                    }
+                }
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ExportDownloadButton(
                         transactions = filteredList,
-                        preferredCurrency = primaryCurrency,
+                        preferredCurrency = selectedCurrency ?: primaryCurrency,
                         reportTitle = tr(
                             isArabic,
                             "الفلوس اللي دخلت لك من يوم ما استخدمت البرنامج",
                             "Your Money Since Using the App"
                         ),
-                        filterSummary = tr(
-                            isArabic,
-                            "${filteredList.size} عملية إضافة فلوس",
-                            "${filteredList.size} money-added entries"
-                        ),
+                        filterSummary = exportFilterSummary,
                         isArabic = isArabic,
                         testTag = "lifetime_export_btn",
                         modifier = Modifier.fillMaxWidth()
@@ -363,6 +439,10 @@ fun LifetimeMoneyScreen(
                                 searchQuery = ""
                                 selectedSource = null
                                 selectedCategory = null
+                                selectedParty = null
+                                selectedItem = null
+                                noteFilterQuery = ""
+                                selectedCurrency = null
                             }
                         } else null,
                         title = tr(isArabic, "بحث وفلاتر الإضافات", "Search & Filter Added Money"),
@@ -379,8 +459,8 @@ fun LifetimeMoneyScreen(
                                 Text(
                                     text = tr(
                                         isArabic,
-                                        "ابحث بـ (جات إزاي، عن طريق إيه، المبلغ، أو التاريخ)...",
-                                        "Search by source, method, amount, or date..."
+                                        "بحث سريع بـ (جات إزاي، عن طريق إيه، الجهة، الملاحظة، المبلغ)...",
+                                        "Quick search source, method, party, note, amount..."
                                     ),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
@@ -407,36 +487,79 @@ fun LifetimeMoneyScreen(
                             )
                         )
 
-                        if (availableSources.isNotEmpty() || availableCategories.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                if (availableCategories.isNotEmpty()) {
-                                    SmartSingleSelectDropdown(
-                                        label = tr(isArabic, "جات إزاي", "Source"),
-                                        selectedValue = selectedCategory,
-                                        options = categoryOptions,
-                                        isArabic = isArabic,
-                                        onSelected = { selectedCategory = it },
-                                        isHighlighted = selectedCategory != null,
-                                        testTag = "lifetime_category_dropdown",
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                                if (availableSources.isNotEmpty()) {
-                                    SmartSingleSelectDropdown(
-                                        label = tr(isArabic, "عن طريق إيه", "Channel"),
-                                        selectedValue = selectedSource,
-                                        options = sourceOptions,
-                                        isArabic = isArabic,
-                                        onSelected = { selectedSource = it },
-                                        isHighlighted = selectedSource != null,
-                                        testTag = "lifetime_source_dropdown",
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "جات إزاي", "Source"),
+                                selectedValue = selectedCategory,
+                                options = categoryOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedCategory = it },
+                                isHighlighted = selectedCategory != null,
+                                testTag = "lifetime_category_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "عن طريق إيه", "Channel"),
+                                selectedValue = selectedSource,
+                                options = sourceOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedSource = it },
+                                isHighlighted = selectedSource != null,
+                                testTag = "lifetime_source_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "من مين / الجهة", "From / Party"),
+                                selectedValue = selectedParty,
+                                options = partyOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedParty = it },
+                                isHighlighted = selectedParty != null,
+                                testTag = "lifetime_party_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "عشان إيه / التفاصيل", "What For / Item"),
+                                selectedValue = selectedItem,
+                                options = itemOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedItem = it },
+                                isHighlighted = selectedItem != null,
+                                testTag = "lifetime_item_dropdown",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        SmartNoteFilterDropdown(
+                            label = tr(isArabic, "الملاحظة الإضافية", "Additional Note"),
+                            noteQuery = noteFilterQuery,
+                            availableNotes = availableNotes,
+                            isArabic = isArabic,
+                            onNoteQueryChange = { noteFilterQuery = it },
+                            testTag = "lifetime_note_dropdown",
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (availableCurrencies.size > 1) {
+                            SmartSingleSelectDropdown(
+                                label = tr(isArabic, "العملة", "Currency"),
+                                selectedValue = selectedCurrency,
+                                options = currencyOptions,
+                                isArabic = isArabic,
+                                onSelected = { selectedCurrency = it },
+                                isHighlighted = selectedCurrency != null,
+                                testTag = "lifetime_currency_dropdown",
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
                 }

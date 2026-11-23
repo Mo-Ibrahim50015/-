@@ -57,6 +57,9 @@ data class ReportFilterState(
     val sources: Set<String> = emptySet(), // empty = all
     val currencies: Set<String> = emptySet(), // empty = all
     val categories: Set<String> = emptySet(), // empty = all
+    val parties: Set<String> = emptySet(), // اندفعت لمين / الجهة — empty = all
+    val items: Set<String> = emptySet(), // عشان إيه / البند أو السبب — empty = all
+    val noteQuery: String = "", // البحث في الملاحظة الإضافية — blank = all
     val amountOp: ComparisonOperator = ComparisonOperator.NONE,
     val amountValue1Minor: Long? = null,
     val amountValue2Minor: Long? = null,
@@ -75,6 +78,9 @@ data class ReportFilterState(
             sources.isNotEmpty() ||
             currencies.isNotEmpty() ||
             categories.isNotEmpty() ||
+            parties.isNotEmpty() ||
+            items.isNotEmpty() ||
+            noteQuery.isNotBlank() ||
             (amountOp != ComparisonOperator.NONE && amountValue1Minor != null) ||
             datePreset != DatePreset.ALL ||
             (dateOp != ComparisonOperator.NONE && dateValue1.isNotBlank()) ||
@@ -89,6 +95,9 @@ data class ReportFilterState(
         obj.put("sources", JSONArray(sources.toList()))
         obj.put("currencies", JSONArray(currencies.toList()))
         obj.put("categories", JSONArray(categories.toList()))
+        obj.put("parties", JSONArray(parties.toList()))
+        obj.put("items", JSONArray(items.toList()))
+        obj.put("noteQuery", noteQuery)
         obj.put("amountOp", amountOp.name)
         if (amountValue1Minor != null) obj.put("amountValue1Minor", amountValue1Minor)
         if (amountValue2Minor != null) obj.put("amountValue2Minor", amountValue2Minor)
@@ -119,6 +128,9 @@ data class ReportFilterState(
                     sources = readSet("sources"),
                     currencies = readSet("currencies"),
                     categories = readSet("categories"),
+                    parties = readSet("parties"),
+                    items = readSet("items"),
+                    noteQuery = o.optString("noteQuery", ""),
                     amountOp = runCatching {
                         ComparisonOperator.valueOf(o.optString("amountOp", "NONE"))
                     }.getOrDefault(ComparisonOperator.NONE),
@@ -310,6 +322,26 @@ fun applyReportFilter(
         // 4. Categories (AND)
         if (filter.categories.isNotEmpty() && tx.category !in filter.categories) return@filter false
 
+        // 4b. Paid To / Party (اندفعت لمين / الجهة) (AND — supports exact pick or typed search keyword)
+        if (filter.parties.isNotEmpty()) {
+            val txParty = tx.debtParty.trim()
+            if (txParty.isBlank() || filter.parties.none { p -> txParty.contains(p.trim(), ignoreCase = true) }) {
+                return@filter false
+            }
+        }
+
+        // 4c. What For / Item Name (عشان إيه / البند) (AND — supports exact pick or typed search keyword)
+        if (filter.items.isNotEmpty()) {
+            val txItem = tx.itemName.trim()
+            if (txItem.isBlank() || filter.items.none { itm -> txItem.contains(itm.trim(), ignoreCase = true) }) {
+                return@filter false
+            }
+        }
+
+        // 4d. Additional Note search (الملاحظة الإضافية) (AND)
+        val nq = filter.noteQuery.trim()
+        if (nq.isNotEmpty() && !tx.note.contains(nq, ignoreCase = true)) return@filter false
+
         // 5. Amount condition (AND)
         if (filter.amountOp != ComparisonOperator.NONE && filter.amountValue1Minor != null) {
             val v1 = filter.amountValue1Minor
@@ -364,6 +396,123 @@ fun applyReportFilter(
                 ComparisonOperator.LT -> tx.time < t1
                 ComparisonOperator.LTE -> tx.time <= t1
                 ComparisonOperator.BETWEEN -> tx.time >= minOf(t1, t2) && tx.time <= maxOf(t1, t2)
+            }
+            if (!timeMatches) return@filter false
+        }
+
+        true
+    }
+}
+
+/**
+ * Applies all ReportFilterState criteria consistently to scheduled obligations so exports and analytics
+ * strictly honor active filters (and include ALL obligations when no filters are selected).
+ */
+fun applyObligationsReportFilter(
+    allObligations: List<ObligationEntity>,
+    filter: ReportFilterState
+): List<ObligationEntity> {
+    if (!filter.hasAnyActiveFilter()) return allObligations
+    if (filter.type == TransactionType.INCOME) return emptyList()
+    if (filter.categories.isNotEmpty()) return emptyList()
+
+    val today = currentIsoDate()
+    val (weekStart, weekEnd) = currentWeekRange()
+    val (monthStart, monthEnd) = currentMonthRange()
+    val nq = filter.noteQuery.trim()
+
+    return allObligations.filter { ob ->
+        val debtMatches = when (filter.debtFilter) {
+            DebtFilter.ALL -> true
+            DebtFilter.NON_DEBT -> ob.isPaid
+            DebtFilter.DEBT_ALL -> true
+            DebtFilter.DEBT_UNPAID, DebtFilter.DEBT_EXPENSE -> !ob.isPaid
+            DebtFilter.DEBT_SETTLED, DebtFilter.PAYMENTS_EXPENSE -> ob.isPaid
+            DebtFilter.DEBT_INCOME, DebtFilter.PAYMENTS_INCOME -> false
+            else -> true
+        }
+        if (!debtMatches) return@filter false
+
+        val reminderMatches = when (filter.reminderFilter) {
+            ReminderFilter.HAS_REMINDER -> ob.dueDate.isNotBlank()
+            ReminderFilter.ACTIVE -> ob.reminderEnabled && !ob.isPaid && ob.dueDate.isNotBlank()
+            ReminderFilter.MUTED -> !ob.reminderEnabled
+            else -> true
+        }
+        if (!reminderMatches) return@filter false
+
+        if (filter.currencies.isNotEmpty() && ob.currency !in filter.currencies) return@filter false
+        if (filter.sources.isNotEmpty() && (!ob.isPaid || ob.paidSource !in filter.sources)) return@filter false
+        if (filter.parties.isNotEmpty()) {
+            val obParty = ob.party.trim()
+            if (obParty.isBlank() || filter.parties.none { p -> obParty.contains(p.trim(), ignoreCase = true) }) {
+                return@filter false
+            }
+        }
+        if (filter.items.isNotEmpty()) {
+            val obReason = ob.reason.trim()
+            if (obReason.isBlank() || filter.items.none { itm -> obReason.contains(itm.trim(), ignoreCase = true) }) {
+                return@filter false
+            }
+        }
+        if (nq.isNotEmpty() && !ob.note.contains(nq, ignoreCase = true)) return@filter false
+
+        if (filter.amountOp != ComparisonOperator.NONE && filter.amountValue1Minor != null) {
+            val v1 = filter.amountValue1Minor
+            val v2 = filter.amountValue2Minor ?: v1
+            val amountMatches = when (filter.amountOp) {
+                ComparisonOperator.NONE -> true
+                ComparisonOperator.EQ -> ob.amountMinor == v1
+                ComparisonOperator.GT -> ob.amountMinor > v1
+                ComparisonOperator.GTE -> ob.amountMinor >= v1
+                ComparisonOperator.LT -> ob.amountMinor < v1
+                ComparisonOperator.LTE -> ob.amountMinor <= v1
+                ComparisonOperator.BETWEEN -> ob.amountMinor in minOf(v1, v2)..maxOf(v1, v2)
+            }
+            if (!amountMatches) return@filter false
+        }
+
+        val effectiveDate = ob.paidDate.ifBlank { ob.dueDate }
+        val dateMatches = when (filter.datePreset) {
+            DatePreset.ALL -> true
+            DatePreset.TODAY -> effectiveDate == today
+            DatePreset.WEEK -> effectiveDate.isNotBlank() && effectiveDate >= weekStart && effectiveDate <= weekEnd
+            DatePreset.MONTH -> effectiveDate.isNotBlank() && effectiveDate >= monthStart && effectiveDate <= monthEnd
+            DatePreset.CUSTOM -> {
+                if (filter.dateOp == ComparisonOperator.NONE || filter.dateValue1.isBlank()) {
+                    true
+                } else if (effectiveDate.isBlank()) {
+                    false
+                } else {
+                    val d1 = filter.dateValue1
+                    val d2 = filter.dateValue2.ifBlank { d1 }
+                    when (filter.dateOp) {
+                        ComparisonOperator.NONE -> true
+                        ComparisonOperator.EQ -> effectiveDate == d1
+                        ComparisonOperator.GT -> effectiveDate > d1
+                        ComparisonOperator.GTE -> effectiveDate >= d1
+                        ComparisonOperator.LT -> effectiveDate < d1
+                        ComparisonOperator.LTE -> effectiveDate <= d1
+                        ComparisonOperator.BETWEEN -> effectiveDate >= minOf(d1, d2) && effectiveDate <= maxOf(d1, d2)
+                    }
+                }
+            }
+        }
+        if (!dateMatches) return@filter false
+
+        if (filter.timeOp != ComparisonOperator.NONE && filter.timeValue1.isNotBlank()) {
+            val t1 = filter.timeValue1
+            val t2 = filter.timeValue2.ifBlank { t1 }
+            val effectiveTime = ob.dueTime
+            if (effectiveTime.isBlank()) return@filter false
+            val timeMatches = when (filter.timeOp) {
+                ComparisonOperator.NONE -> true
+                ComparisonOperator.EQ -> effectiveTime == t1
+                ComparisonOperator.GT -> effectiveTime > t1
+                ComparisonOperator.GTE -> effectiveTime >= t1
+                ComparisonOperator.LT -> effectiveTime < t1
+                ComparisonOperator.LTE -> effectiveTime <= t1
+                ComparisonOperator.BETWEEN -> effectiveTime >= minOf(t1, t2) && effectiveTime <= maxOf(t1, t2)
             }
             if (!timeMatches) return@filter false
         }

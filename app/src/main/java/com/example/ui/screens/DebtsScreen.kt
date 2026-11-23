@@ -72,6 +72,7 @@ import com.example.ui.components.ItemReminderConfig
 import com.example.ui.components.ReminderSettingsDialog
 import com.example.ui.components.SecurityVerificationDialog
 import com.example.ui.components.SereneCard
+import com.example.ui.components.SmartNoteFilterDropdown
 import com.example.ui.components.SmartSingleSelectDropdown
 import com.example.ui.theme.AmountBodyStyle
 import com.example.ui.theme.AmountDisplayStyle
@@ -114,6 +115,9 @@ fun DebtsScreen(
     var typeFilter by remember(initialDebtTab) { mutableStateOf(initialDebtTab) } // "all", "income", "expense"
     var selectedSource by remember { mutableStateOf<String?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
+    var selectedParty by remember { mutableStateOf<String?>(null) }
+    var selectedItem by remember { mutableStateOf<String?>(null) }
+    var noteFilterQuery by remember { mutableStateOf("") }
     var groupMode by remember { mutableStateOf(DebtGroupMode.FLAT) }
     var pendingDeleteTx by remember { mutableStateOf<TransactionEntity?>(null) }
     var pendingPayTx by remember { mutableStateOf<TransactionEntity?>(null) }
@@ -151,10 +155,28 @@ fun DebtsScreen(
         paidObligations.sumOf { it.amountMinor }
     }
     val availableSources = remember(currencyDebts) {
-        currencyDebts.map { it.source }.distinct().sorted()
+        currencyDebts.map { it.source }.filter { it.isNotBlank() }.distinct().sorted()
     }
     val availableCategories = remember(currencyDebts) {
-        currencyDebts.map { it.category }.distinct().sorted()
+        currencyDebts.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val availableParties = remember(currencyDebts, currencyObligations) {
+        (currencyDebts.map { it.debtParty.trim() } + currencyObligations.map { it.party.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableItems = remember(currencyDebts, currencyObligations) {
+        (currencyDebts.map { it.itemName.trim() } + currencyObligations.map { it.reason.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+    val availableNotes = remember(currencyDebts, currencyObligations) {
+        (currencyDebts.map { it.note.trim() } + currencyObligations.map { it.note.trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
     }
 
     val filteredDebts = remember(
@@ -163,9 +185,13 @@ fun DebtsScreen(
         statusFilter,
         typeFilter,
         selectedSource,
-        selectedCategory
+        selectedCategory,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
     ) {
         val q = searchQuery.trim().lowercase()
+        val nq = noteFilterQuery.trim()
         currencyDebts.filter { tx ->
             val matchesStatus = when (statusFilter) {
                 DebtStatusFilter.UNPAID -> !tx.isDebtSettled
@@ -176,6 +202,9 @@ fun DebtsScreen(
             if (typeFilter != "all" && tx.type != typeFilter) return@filter false
             if (selectedSource != null && tx.source != selectedSource) return@filter false
             if (selectedCategory != null && tx.category != selectedCategory) return@filter false
+            if (selectedParty != null && tx.debtParty.trim() != selectedParty) return@filter false
+            if (selectedItem != null && tx.itemName.trim() != selectedItem) return@filter false
+            if (nq.isNotEmpty() && !tx.note.contains(nq, ignoreCase = true)) return@filter false
             if (q.isNotEmpty()) {
                 val amtStr = formatAmountMinor(tx.amountMinor, false)
                 val hay = "${tx.itemName} ${tx.debtParty} ${tx.category} ${tx.source} ${tx.note} ${tx.date} $amtStr".lowercase()
@@ -185,11 +214,26 @@ fun DebtsScreen(
         }
     }
 
-    val filteredPendingObligations = remember(pendingObligations, searchQuery, statusFilter) {
-        if (statusFilter == DebtStatusFilter.SETTLED) emptyList()
-        else {
+    val filteredPendingObligations = remember(
+        pendingObligations,
+        searchQuery,
+        statusFilter,
+        typeFilter,
+        selectedSource,
+        selectedCategory,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery
+    ) {
+        if (statusFilter == DebtStatusFilter.SETTLED || typeFilter == TransactionType.INCOME || selectedSource != null || selectedCategory != null) {
+            emptyList()
+        } else {
             val q = searchQuery.trim().lowercase()
+            val nq = noteFilterQuery.trim()
             pendingObligations.filter { ob ->
+                if (selectedParty != null && ob.party.trim() != selectedParty) return@filter false
+                if (selectedItem != null && ob.reason.trim() != selectedItem) return@filter false
+                if (nq.isNotEmpty() && !ob.note.contains(nq, ignoreCase = true)) return@filter false
                 if (q.isEmpty()) true
                 else {
                     val amtStr = formatAmountMinor(ob.amountMinor, false)
@@ -223,7 +267,51 @@ fun DebtsScreen(
         statusFilter != DebtStatusFilter.UNPAID ||
         typeFilter != "all" ||
         selectedSource != null ||
-        selectedCategory != null
+        selectedCategory != null ||
+        selectedParty != null ||
+        selectedItem != null ||
+        noteFilterQuery.isNotBlank()
+
+    val exportFilterSummary = remember(
+        hasActiveFilters,
+        filteredDebts.size,
+        filteredPendingObligations.size,
+        filteredTotalMinor,
+        statusFilter,
+        typeFilter,
+        selectedSource,
+        selectedCategory,
+        selectedParty,
+        selectedItem,
+        noteFilterQuery,
+        searchQuery,
+        sym,
+        isArabic
+    ) {
+        val totalItems = filteredDebts.size + filteredPendingObligations.size
+        if (!hasActiveFilters) {
+            tr(
+                isArabic,
+                "كل المبالغ المطلوب دفعها قريباً ($totalItems عملية • ${formatAmountMinor(filteredTotalMinor)} $sym — بدون فلاتر)",
+                "All Upcoming Payments Due ($totalItems items • ${formatAmountMinor(filteredTotalMinor)} $sym — No Filters)"
+            )
+        } else {
+            buildList {
+                if (statusFilter != DebtStatusFilter.UNPAID) {
+                    add(if (statusFilter == DebtStatusFilter.ALL) tr(isArabic, "كل الحالات", "All Statuses") else tr(isArabic, "المسددة", "Settled"))
+                }
+                if (typeFilter == TransactionType.EXPENSE) add(tr(isArabic, "مصاريف لسه هتندفع", "Upcoming Expenses"))
+                if (typeFilter == TransactionType.INCOME) add(tr(isArabic, "سلف ومبالغ مستلمة", "Borrowed"))
+                selectedSource?.let { add(tr(isArabic, "الحساب: $it", "Account: $it")) }
+                selectedCategory?.let { add(tr(isArabic, "التصنيف: $it", "Category: $it")) }
+                selectedParty?.let { add(tr(isArabic, "هتندفع لمين: $it", "Paid To: $it")) }
+                selectedItem?.let { add(tr(isArabic, "عشان إيه: $it", "What For: $it")) }
+                if (noteFilterQuery.isNotBlank()) add(tr(isArabic, "ملاحظة: \"${noteFilterQuery.trim()}\"", "Note: \"${noteFilterQuery.trim()}\""))
+                if (searchQuery.isNotBlank()) add(tr(isArabic, "بحث: \"${searchQuery.trim()}\"", "Search: \"${searchQuery.trim()}\""))
+                add("$totalItems • ${formatAmountMinor(filteredTotalMinor)} $sym")
+            }.joinToString(" • ")
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         LazyColumn(
@@ -562,7 +650,7 @@ fun DebtsScreen(
                 }
             }
 
-            // 1c. Dedicated Category Tabs (All / Upcoming Expenses / Borrowed)
+            // 2. Unified Collapsible Searchable Dropdown Filters Card + Export Bar
             item {
                 val unpaidIncomeCount = remember(unpaidList) {
                     unpaidList.count { it.type == TransactionType.INCOME }
@@ -570,64 +658,26 @@ fun DebtsScreen(
                 val unpaidExpenseCount = remember(unpaidList) {
                     unpaidList.count { it.type == TransactionType.EXPENSE }
                 }
-                SereneCard(contentPadding = PaddingValues(10.dp)) {
-                    Text(
-                        text = tr(
-                            isArabic,
-                            "تصنيف المبالغ اللي لسه هتندفع:",
-                            "Filter Upcoming Items:"
-                        ),
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        DebtTypeTabCard(
-                            modifier = Modifier.weight(0.85f),
-                            title = tr(isArabic, "الكل", "All"),
-                            subtitle = "${unpaidList.size} • ${formatAmountMinor(totalUnpaidDebtMinor, false)}",
-                            accent = MaterialTheme.colorScheme.primary,
-                            selected = typeFilter == "all",
-                            tag = "debt_tab_all",
-                            onClick = { typeFilter = "all" }
-                        )
-                        DebtTypeTabCard(
-                            modifier = Modifier.weight(1.15f),
-                            title = tr(isArabic, "مصاريف لسه هتندفع", "Upcoming Expenses"),
-                            subtitle = "$unpaidExpenseCount • ${formatAmountMinor(unpaidExpenseDebtMinor, false)} $sym",
-                            accent = ext.expenseColor,
-                            selected = typeFilter == TransactionType.EXPENSE,
-                            tag = "debt_tab_expense",
-                            onClick = { typeFilter = TransactionType.EXPENSE }
-                        )
-                        DebtTypeTabCard(
-                            modifier = Modifier.weight(1.0f),
-                            title = tr(isArabic, "سلف ومبالغ مستلمة", "Borrowed"),
-                            subtitle = "$unpaidIncomeCount • ${formatAmountMinor(unpaidIncomeDebtMinor, false)} $sym",
-                            accent = ext.warningAmber,
-                            selected = typeFilter == TransactionType.INCOME,
-                            tag = "debt_tab_income",
-                            onClick = { typeFilter = TransactionType.INCOME }
-                        )
-                    }
-                }
-            }
-
-            // 2. Collapsible Dropdown Multi-Filter Card + Export Bar
-            item {
                 val activeCount = (if (searchQuery.isNotBlank()) 1 else 0) +
                     (if (statusFilter != DebtStatusFilter.UNPAID) 1 else 0) +
                     (if (typeFilter != "all") 1 else 0) +
                     (if (selectedSource != null) 1 else 0) +
-                    (if (selectedCategory != null) 1 else 0)
+                    (if (selectedCategory != null) 1 else 0) +
+                    (if (selectedParty != null) 1 else 0) +
+                    (if (selectedItem != null) 1 else 0) +
+                    (if (noteFilterQuery.isNotBlank()) 1 else 0)
                 val statusLabel = when (statusFilter) {
                     DebtStatusFilter.UNPAID -> tr(isArabic, "القائمة (${unpaidList.size})", "Unpaid (${unpaidList.size})")
                     DebtStatusFilter.ALL -> tr(isArabic, "الكل (${currencyDebts.size})", "All (${currencyDebts.size})")
                     DebtStatusFilter.SETTLED -> tr(isArabic, "المسددة (${settledList.size})", "Settled (${settledList.size})")
+                }
+                val partyOptions = remember(availableParties, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                        availableParties.map { DropdownFilterOption<String?>(it, it) }
+                }
+                val itemOptions = remember(availableItems, isArabic) {
+                    listOf(DropdownFilterOption<String?>(null, tr(isArabic, "الكل", "All"))) +
+                        availableItems.map { DropdownFilterOption<String?>(it, it) }
                 }
                 CollapsibleFilterDropdownCard(
                     isArabic = isArabic,
@@ -639,6 +689,9 @@ fun DebtsScreen(
                             typeFilter = "all"
                             selectedSource = null
                             selectedCategory = null
+                            selectedParty = null
+                            selectedItem = null
+                            noteFilterQuery = ""
                         }
                     } else null,
                     title = tr(isArabic, "فلاتر وبحث المبالغ المطلوبة ($statusLabel)", "Filter & Search ($statusLabel)"),
@@ -685,21 +738,44 @@ fun DebtsScreen(
                             .testTag("debts_search_input")
                     )
 
-                    SmartSingleSelectDropdown(
-                        label = tr(isArabic, "حالة السداد", "Settlement Status"),
-                        selectedValue = statusFilter,
-                        options = listOf(
-                            DropdownFilterOption(DebtStatusFilter.UNPAID, tr(isArabic, "القائمة (${unpaidList.size})", "Unpaid (${unpaidList.size})")),
-                            DropdownFilterOption(DebtStatusFilter.ALL, tr(isArabic, "الكل (${currencyDebts.size})", "All (${currencyDebts.size})")),
-                            DropdownFilterOption(DebtStatusFilter.SETTLED, tr(isArabic, "تم سدادها (${settledList.size})", "Settled (${settledList.size})"))
-                        ),
-                        isArabic = isArabic,
-                        onSelected = { statusFilter = it },
-                        isHighlighted = statusFilter != DebtStatusFilter.UNPAID,
-                        testTag = "debt_status_dropdown"
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "نوع المبالغ المطلوبة", "Upcoming Type"),
+                            selectedValue = typeFilter,
+                            options = listOf(
+                                DropdownFilterOption("all", tr(isArabic, "الكل (${unpaidList.size})", "All (${unpaidList.size})")),
+                                DropdownFilterOption(TransactionType.EXPENSE, tr(isArabic, "مصاريف لسه هتندفع ($unpaidExpenseCount)", "Upcoming Expenses ($unpaidExpenseCount)")),
+                                DropdownFilterOption(TransactionType.INCOME, tr(isArabic, "سلف ومبالغ مستلمة ($unpaidIncomeCount)", "Borrowed ($unpaidIncomeCount)"))
+                            ),
+                            isArabic = isArabic,
+                            onSelected = { typeFilter = it },
+                            isHighlighted = typeFilter != "all",
+                            testTag = "debt_type_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "حالة السداد", "Settlement Status"),
+                            selectedValue = statusFilter,
+                            options = listOf(
+                                DropdownFilterOption(DebtStatusFilter.UNPAID, tr(isArabic, "القائمة (${unpaidList.size})", "Unpaid (${unpaidList.size})")),
+                                DropdownFilterOption(DebtStatusFilter.ALL, tr(isArabic, "الكل (${currencyDebts.size})", "All (${currencyDebts.size})")),
+                                DropdownFilterOption(DebtStatusFilter.SETTLED, tr(isArabic, "تم سدادها (${settledList.size})", "Settled (${settledList.size})"))
+                            ),
+                            isArabic = isArabic,
+                            onSelected = { statusFilter = it },
+                            isHighlighted = statusFilter != DebtStatusFilter.UNPAID,
+                            testTag = "debt_status_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
 
-                    if (availableSources.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         SmartSingleSelectDropdown(
                             label = tr(isArabic, "المصدر / الحساب", "Source / Account"),
                             selectedValue = selectedSource,
@@ -708,11 +784,9 @@ fun DebtsScreen(
                             isArabic = isArabic,
                             onSelected = { selectedSource = it },
                             isHighlighted = selectedSource != null,
-                            testTag = "debt_source_dropdown"
+                            testTag = "debt_source_dropdown",
+                            modifier = Modifier.weight(1f)
                         )
-                    }
-
-                    if (availableCategories.isNotEmpty()) {
                         SmartSingleSelectDropdown(
                             label = tr(isArabic, "التصنيف", "Category"),
                             selectedValue = selectedCategory,
@@ -721,23 +795,85 @@ fun DebtsScreen(
                             isArabic = isArabic,
                             onSelected = { selectedCategory = it },
                             isHighlighted = selectedCategory != null,
-                            testTag = "debt_category_dropdown"
+                            testTag = "debt_category_dropdown",
+                            modifier = Modifier.weight(1f)
                         )
                     }
 
-                    SmartSingleSelectDropdown(
-                        label = tr(isArabic, "طريقة العرض والتنظيم", "Group By"),
-                        selectedValue = groupMode,
-                        options = listOf(
-                            DropdownFilterOption(DebtGroupMode.FLAT, tr(isArabic, "قائمة عادية", "Flat List")),
-                            DropdownFilterOption(DebtGroupMode.BY_SOURCE, tr(isArabic, "مجمع حسب المصدر", "By Source")),
-                            DropdownFilterOption(DebtGroupMode.BY_CATEGORY, tr(isArabic, "مجمع حسب التصنيف", "By Category"))
-                        ),
-                        isArabic = isArabic,
-                        onSelected = { groupMode = it },
-                        isHighlighted = groupMode != DebtGroupMode.FLAT,
-                        testTag = "debt_group_dropdown"
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "هتندفع لمين / الجهة", "Paid To / Party"),
+                            selectedValue = selectedParty,
+                            options = partyOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedParty = it },
+                            isHighlighted = selectedParty != null,
+                            testTag = "debt_party_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "عشان إيه / البند", "What For / Item"),
+                            selectedValue = selectedItem,
+                            options = itemOptions,
+                            isArabic = isArabic,
+                            onSelected = { selectedItem = it },
+                            isHighlighted = selectedItem != null,
+                            testTag = "debt_item_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SmartNoteFilterDropdown(
+                            label = tr(isArabic, "الملاحظة الإضافية", "Additional Notes"),
+                            noteQuery = noteFilterQuery,
+                            availableNotes = availableNotes,
+                            isArabic = isArabic,
+                            onNoteQueryChange = { noteFilterQuery = it },
+                            testTag = "debt_note_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "طريقة العرض", "Group By"),
+                            selectedValue = groupMode,
+                            options = listOf(
+                                DropdownFilterOption(DebtGroupMode.FLAT, tr(isArabic, "قائمة عادية", "Flat List")),
+                                DropdownFilterOption(DebtGroupMode.BY_SOURCE, tr(isArabic, "مجمع حسب المصدر", "By Source")),
+                                DropdownFilterOption(DebtGroupMode.BY_CATEGORY, tr(isArabic, "مجمع حسب التصنيف", "By Category"))
+                            ),
+                            isArabic = isArabic,
+                            onSelected = { groupMode = it },
+                            isHighlighted = groupMode != DebtGroupMode.FLAT,
+                            testTag = "debt_group_dropdown",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    if (availableCurrencies.size > 1) {
+                        SmartSingleSelectDropdown(
+                            label = tr(isArabic, "العملة", "Currency"),
+                            selectedValue = validCurrency,
+                            options = availableCurrencies.map { curr ->
+                                DropdownFilterOption(curr, "${currencySymbol(curr, isArabic)} ($curr)")
+                            },
+                            isArabic = isArabic,
+                            onSelected = { curr ->
+                                activeCurrency = curr
+                                selectedSource = null
+                                selectedCategory = null
+                                selectedParty = null
+                                selectedItem = null
+                            },
+                            isHighlighted = validCurrency != settings.defaultCurrency,
+                            testTag = "debt_currency_dropdown"
+                        )
+                    }
                 }
             }
 
@@ -771,11 +907,7 @@ fun DebtsScreen(
                         obligations = filteredPendingObligations,
                         preferredCurrency = validCurrency,
                         reportTitle = tr(isArabic, "المبالغ المطلوب دفعها قريباً", "Upcoming Payments Due"),
-                        filterSummary = tr(
-                            isArabic,
-                            "${filteredDebts.size + filteredPendingObligations.size} عملية • ${formatAmountMinor(filteredTotalMinor)} $sym",
-                            "${filteredDebts.size + filteredPendingObligations.size} entries • ${formatAmountMinor(filteredTotalMinor)} $sym"
-                        ),
+                        filterSummary = exportFilterSummary,
                         isArabic = isArabic,
                         compactLabel = true,
                         testTag = "debts_export_btn"
@@ -1330,10 +1462,10 @@ private fun DebtDetailCard(
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
-                                text = if (tx.paymentDueDate.isNotBlank()) {
+                                text = if (tx.hasPaymentReminder && tx.paymentDueDate.isNotBlank()) {
                                     tr(isArabic, "تنبيه (${tx.paymentDueDate})", "Alert (${tx.paymentDueDate})")
                                 } else {
-                                    tr(isArabic, "تنبيه", "Alert")
+                                    tr(isArabic, "ضبط ميعاد", "Set Due")
                                 },
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = if (tx.hasPaymentReminder) ext.incomeColor else MaterialTheme.colorScheme.primary

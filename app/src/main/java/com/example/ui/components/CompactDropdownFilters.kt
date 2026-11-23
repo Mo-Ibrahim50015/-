@@ -218,9 +218,7 @@ fun CollapsibleFilterDropdownCard(
 
 /**
  * Smart Single-Select Dropdown Filter.
- * Rule:
- * - If options.size <= 5 -> opens a sleek compact DropdownMenu inline.
- * - If options.size > 5  -> automatically opens a searchable scrollable picker dialog so long lists stay clean and fast!
+ * ALWAYS opens a searchable scrollable dropdown picker so every dropdown has a built-in search bar.
  */
 @Composable
 fun <T> SmartSingleSelectDropdown(
@@ -234,7 +232,6 @@ fun <T> SmartSingleSelectDropdown(
     testTag: String = ""
 ) {
     val ext = LocalSereneColors.current
-    var showMenu by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
     val selectedLabel = options.firstOrNull { it.value == selectedValue }?.label ?: ""
 
@@ -242,16 +239,10 @@ fun <T> SmartSingleSelectDropdown(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 44.dp)
+                .heightIn(min = 48.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .then(if (testTag.isNotBlank()) Modifier.testTag(testTag) else Modifier)
-                .clickable {
-                    if (options.size > 5) {
-                        showSearchDialog = true
-                    } else {
-                        showMenu = true
-                    }
-                },
+                .clickable { showSearchDialog = true },
             shape = RoundedCornerShape(12.dp),
             color = if (isHighlighted) ext.incomeContainer else ext.cardSubtleBackground,
             border = BorderStroke(
@@ -288,46 +279,6 @@ fun <T> SmartSingleSelectDropdown(
                     tint = if (isHighlighted) ext.incomeColor else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
-            }
-        }
-
-        if (options.size <= 5) {
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-                modifier = Modifier.background(MaterialTheme.colorScheme.surface)
-            ) {
-                options.forEach { opt ->
-                    val chosen = opt.value == selectedValue
-                    DropdownMenuItem(
-                        text = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = opt.label,
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        fontWeight = if (chosen) FontWeight.Bold else FontWeight.Normal
-                                    ),
-                                    color = if (chosen) ext.incomeColor else MaterialTheme.colorScheme.onSurface
-                                )
-                                if (chosen) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Check,
-                                        contentDescription = null,
-                                        tint = ext.incomeColor,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-                            }
-                        },
-                        onClick = {
-                            onSelected(opt.value)
-                            showMenu = false
-                        }
-                    )
-                }
             }
         }
     }
@@ -387,9 +338,12 @@ private fun <T> SearchableSingleOptionDialog(
                     Text(
                         text = "$title (${options.size})",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(34.dp)) {
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Outlined.Close, contentDescription = tr(isArabic, "إغلاق", "Close"), modifier = Modifier.size(18.dp))
                     }
                 }
@@ -402,13 +356,13 @@ private fun <T> SearchableSingleOptionDialog(
                     trailingIcon = if (query.isNotEmpty()) {
                         {
                             IconButton(onClick = { query = "" }) {
-                                Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Outlined.Close, contentDescription = tr(isArabic, "مسح", "Clear"), modifier = Modifier.size(16.dp))
                             }
                         }
                     } else null,
                     placeholder = {
                         Text(
-                            text = tr(isArabic, "ابحث في القائمة...", "Search options..."),
+                            text = tr(isArabic, "ابحث في $title...", "Search $title..."),
                             style = MaterialTheme.typography.bodySmall
                         )
                     },
@@ -420,52 +374,62 @@ private fun <T> SearchableSingleOptionDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 310.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(filtered) { opt ->
-                        val chosen = opt.value == selectedValue
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(11.dp))
-                                .clickable { onSelect(opt.value) },
-                            shape = RoundedCornerShape(11.dp),
-                            color = if (chosen) ext.incomeContainer else ext.cardSubtleBackground
-                        ) {
-                            Row(
+                if (filtered.isEmpty()) {
+                    Text(
+                        text = tr(isArabic, "لا توجد نتائج مطابقة للبحث", "No matching options"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 310.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(filtered) { opt ->
+                            val chosen = opt.value == selectedValue
+                            Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                    .heightIn(min = 46.dp)
+                                    .clip(RoundedCornerShape(11.dp))
+                                    .clickable { onSelect(opt.value) },
+                                shape = RoundedCornerShape(11.dp),
+                                color = if (chosen) ext.incomeContainer else ext.cardSubtleBackground
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = opt.label,
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            fontWeight = if (chosen) FontWeight.Bold else FontWeight.Medium
-                                        ),
-                                        color = if (chosen) ext.incomeColor else MaterialTheme.colorScheme.onSurface
-                                    )
-                                    if (opt.subtitle.isNotBlank()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = opt.subtitle,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            text = opt.label,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = if (chosen) FontWeight.Bold else FontWeight.Medium
+                                            ),
+                                            color = if (chosen) ext.incomeColor else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        if (opt.subtitle.isNotBlank()) {
+                                            Text(
+                                                text = opt.subtitle,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    if (chosen) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Check,
+                                            contentDescription = null,
+                                            tint = ext.incomeColor,
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
-                                }
-                                if (chosen) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Check,
-                                        contentDescription = null,
-                                        tint = ext.incomeColor,
-                                        modifier = Modifier.size(18.dp)
-                                    )
                                 }
                             }
                         }
@@ -477,8 +441,8 @@ private fun <T> SearchableSingleOptionDialog(
 }
 
 /**
- * Smart Multi-Select Dropdown Filter (for Reports multi-currency, multi-source, multi-category).
- * Automatically renders inline search when options.size > 5.
+ * Smart Multi-Select Dropdown Filter (for multi-currency, multi-source, multi-category, multi-party, multi-item).
+ * ALWAYS opens a searchable multi-select dialog so every dropdown has a built-in search bar.
  */
 @Composable
 fun SmartMultiSelectDropdown(
@@ -492,7 +456,6 @@ fun SmartMultiSelectDropdown(
     testTag: String = ""
 ) {
     val ext = LocalSereneColors.current
-    var showMenu by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
     val active = selectedValues.isNotEmpty()
     val summaryText = when {
@@ -505,16 +468,10 @@ fun SmartMultiSelectDropdown(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 44.dp)
+                .heightIn(min = 48.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .then(if (testTag.isNotBlank()) Modifier.testTag(testTag) else Modifier)
-                .clickable {
-                    if (options.size > 5) {
-                        showSearchDialog = true
-                    } else {
-                        showMenu = true
-                    }
-                },
+                .clickable { showSearchDialog = true },
             shape = RoundedCornerShape(12.dp),
             color = if (active) ext.incomeContainer else ext.cardSubtleBackground,
             border = BorderStroke(
@@ -553,55 +510,20 @@ fun SmartMultiSelectDropdown(
                 )
             }
         }
-
-        if (options.size <= 5) {
-            DropdownMenu(
-                expanded = showMenu,
-                onDismissRequest = { showMenu = false },
-                modifier = Modifier.background(MaterialTheme.colorScheme.surface)
-            ) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = tr(isArabic, "الكل (إلغاء التحديد)", "All (Clear)"),
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                            color = if (!active) ext.incomeColor else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    onClick = {
-                        onClear()
-                        showMenu = false
-                    }
-                )
-                options.forEach { item ->
-                    val checked = item in selectedValues
-                    DropdownMenuItem(
-                        text = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Checkbox(checked = checked, onCheckedChange = null)
-                                Text(
-                                    text = item,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        },
-                        onClick = { onToggle(item) }
-                    )
-                }
-            }
-        }
     }
 
     if (showSearchDialog) {
         var query by remember { mutableStateOf("") }
-        val filtered = remember(options, query) {
-            val q = query.trim().lowercase()
-            if (q.isEmpty()) options else options.filter { it.lowercase().contains(q) }
+        val mergedOptions = remember(options, selectedValues) {
+            (selectedValues.toList() + options).distinct()
         }
+        val filtered = remember(mergedOptions, query) {
+            val q = query.trim().lowercase()
+            if (q.isEmpty()) mergedOptions else mergedOptions.filter { it.lowercase().contains(q) }
+        }
+        val trimmedQuery = query.trim()
+        val canApplyCustomQuery = trimmedQuery.isNotBlank() &&
+            mergedOptions.none { it.equals(trimmedQuery, ignoreCase = true) }
         Dialog(onDismissRequest = { showSearchDialog = false }) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -621,23 +543,37 @@ fun SmartMultiSelectDropdown(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "$label (${options.size})",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            text = "$label (${mergedOptions.size})",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        if (selectedValues.isNotEmpty()) {
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { onClear() },
-                                shape = RoundedCornerShape(8.dp),
-                                color = ext.expenseContainer
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (selectedValues.isNotEmpty()) {
+                                Surface(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { onClear() },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = ext.expenseContainer
+                                ) {
+                                    Text(
+                                        text = tr(isArabic, "مسح الكل", "Clear"),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = ext.expenseColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = { showSearchDialog = false },
+                                modifier = Modifier.size(34.dp)
                             ) {
-                                Text(
-                                    text = tr(isArabic, "مسح الكل", "Clear"),
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = ext.expenseColor,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
+                                Icon(Icons.Outlined.Close, contentDescription = tr(isArabic, "إغلاق", "Close"), modifier = Modifier.size(18.dp))
                             }
                         }
                     }
@@ -647,7 +583,19 @@ fun SmartMultiSelectDropdown(
                         onValueChange = { query = it },
                         singleLine = true,
                         leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        placeholder = { Text(tr(isArabic, "ابحث في القائمة...", "Search..."), style = MaterialTheme.typography.bodySmall) },
+                        trailingIcon = if (query.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { query = "" }) {
+                                    Icon(Icons.Outlined.Close, contentDescription = tr(isArabic, "مسح", "Clear"), modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        } else null,
+                        placeholder = {
+                            Text(
+                                tr(isArabic, "ابحث في $label...", "Search $label..."),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        },
                         shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedContainerColor = ext.cardSubtleBackground,
@@ -656,35 +604,87 @@ fun SmartMultiSelectDropdown(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 300.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(filtered) { item ->
-                            val checked = item in selectedValues
-                            Surface(
+                    if (canApplyCustomQuery) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    onToggle(trimmedQuery)
+                                    query = ""
+                                },
+                            shape = RoundedCornerShape(10.dp),
+                            color = ext.incomeContainer,
+                            border = BorderStroke(1.dp, ext.incomeColor.copy(alpha = 0.45f))
+                        ) {
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable { onToggle(item) },
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (checked) ext.incomeContainer else ext.cardSubtleBackground
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Row(
+                                Icon(
+                                    imageVector = Icons.Outlined.Search,
+                                    contentDescription = null,
+                                    tint = ext.incomeColor,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                                Text(
+                                    text = tr(isArabic, "تصفية بكلمة: \"$trimmedQuery\"", "Filter by: \"$trimmedQuery\""),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = ext.incomeColor
+                                )
+                            }
+                        }
+                    }
+
+                    if (mergedOptions.isEmpty() && !canApplyCustomQuery) {
+                        Text(
+                            text = tr(isArabic, "لا توجد عناصر مسجلة في هذا الحقل حتى الآن — يمكنك كتابة أي كلمة في البحث أعلاه", "No recorded items yet — type any keyword above to filter"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 10.dp)
+                        )
+                    } else if (filtered.isEmpty() && !canApplyCustomQuery) {
+                        Text(
+                            text = tr(isArabic, "لا توجد نتائج مطابقة للبحث", "No matching items"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 10.dp)
+                        )
+                    } else if (filtered.isNotEmpty()) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 300.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(filtered) { item ->
+                                val checked = item in selectedValues
+                                Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        .heightIn(min = 46.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { onToggle(item) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (checked) ext.incomeContainer else ext.cardSubtleBackground
                                 ) {
-                                    Checkbox(checked = checked, onCheckedChange = { onToggle(item) })
-                                    Text(
-                                        text = item,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = if (checked) ext.incomeColor else MaterialTheme.colorScheme.onSurface
-                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Checkbox(checked = checked, onCheckedChange = { onToggle(item) })
+                                        Text(
+                                            text = item,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = if (checked) ext.incomeColor else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -694,7 +694,7 @@ fun SmartMultiSelectDropdown(
                         onClick = { showSearchDialog = false },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(46.dp),
+                            .height(48.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = ext.heroCardBackground,
@@ -708,3 +708,275 @@ fun SmartMultiSelectDropdown(
         }
     }
 }
+
+/**
+ * Searchable Dropdown Filter specifically designed for Additional Notes («الملاحظة الإضافية»).
+ * Allows both:
+ * 1) Typing ANY custom keyword inside the dropdown's search bar to filter matching notes, AND
+ * 2) Picking any existing saved note directly from the list.
+ */
+@Composable
+fun SmartNoteFilterDropdown(
+    label: String,
+    noteQuery: String,
+    availableNotes: List<String>,
+    isArabic: Boolean,
+    onNoteQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    testTag: String = ""
+) {
+    val ext = LocalSereneColors.current
+    var showDialog by remember { mutableStateOf(false) }
+    val active = noteQuery.isNotBlank()
+
+    Box(modifier = modifier) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .then(if (testTag.isNotBlank()) Modifier.testTag(testTag) else Modifier)
+                .clickable { showDialog = true },
+            shape = RoundedCornerShape(12.dp),
+            color = if (active) ext.incomeContainer else ext.cardSubtleBackground,
+            border = BorderStroke(
+                1.dp,
+                if (active) ext.incomeColor.copy(alpha = 0.6f) else ext.cardBorder
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = noteQuery.ifBlank { tr(isArabic, "الكل", "All") },
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = if (active) ext.incomeColor else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.ExpandMore,
+                    contentDescription = null,
+                    tint = if (active) ext.incomeColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+
+    if (showDialog) {
+        var draftQuery by remember(noteQuery) { mutableStateOf(noteQuery) }
+        val trimmed = draftQuery.trim()
+        val matchingNotes = remember(availableNotes, trimmed) {
+            if (trimmed.isEmpty()) availableNotes
+            else availableNotes.filter { it.contains(trimmed, ignoreCase = true) }
+        }
+
+        Dialog(onDismissRequest = { showDialog = false }) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "$label (${availableNotes.size})",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        IconButton(onClick = { showDialog = false }, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = tr(isArabic, "إغلاق", "Close"), modifier = Modifier.size(18.dp))
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = draftQuery,
+                        onValueChange = { draftQuery = it },
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        trailingIcon = if (draftQuery.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { draftQuery = "" }) {
+                                    Icon(Icons.Outlined.Close, contentDescription = tr(isArabic, "مسح", "Clear"), modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        } else null,
+                        placeholder = {
+                            Text(
+                                text = tr(isArabic, "ابحث بأي كلمة في الملاحظة الإضافية...", "Search inside additional notes..."),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = ext.cardSubtleBackground,
+                            unfocusedContainerColor = ext.cardSubtleBackground
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        item {
+                            val isAll = noteQuery.isBlank() && trimmed.isEmpty()
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 44.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        onNoteQueryChange("")
+                                        showDialog = false
+                                    },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isAll) ext.incomeContainer else ext.cardSubtleBackground
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = tr(isArabic, "الكل (بدون فلتر للملاحظة)", "All (No note filter)"),
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = if (isAll) FontWeight.Bold else FontWeight.Medium
+                                        ),
+                                        color = if (isAll) ext.incomeColor else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (isAll) {
+                                        Icon(Icons.Outlined.Check, contentDescription = null, tint = ext.incomeColor, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+
+                        if (trimmed.isNotEmpty()) {
+                            item {
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 46.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable {
+                                            onNoteQueryChange(trimmed)
+                                            showDialog = false
+                                        },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = ext.incomeContainer,
+                                    border = BorderStroke(1.dp, ext.incomeColor.copy(alpha = 0.45f))
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(Icons.Outlined.Search, contentDescription = null, tint = ext.incomeColor, modifier = Modifier.size(18.dp))
+                                        Text(
+                                            text = tr(
+                                                isArabic,
+                                                "بحث في كل الملاحظات التي تحتوي على: \"$trimmed\"",
+                                                "Filter all notes containing: \"$trimmed\""
+                                            ),
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = ext.incomeColor
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        items(matchingNotes) { note ->
+                            val chosen = noteQuery.equals(note, ignoreCase = true)
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 44.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        onNoteQueryChange(note)
+                                        showDialog = false
+                                    },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (chosen) ext.incomeContainer else ext.cardSubtleBackground
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = note,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontWeight = if (chosen) FontWeight.Bold else FontWeight.Normal
+                                        ),
+                                        color = if (chosen) ext.incomeColor else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (chosen) {
+                                        Icon(Icons.Outlined.Check, contentDescription = null, tint = ext.incomeColor, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            onNoteQueryChange(trimmed)
+                            showDialog = false
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ext.heroCardBackground,
+                            contentColor = ext.heroCardOnBackground
+                        )
+                    ) {
+                        Text(tr(isArabic, "تطبيق البحث ✓", "Apply Filter ✓"), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+

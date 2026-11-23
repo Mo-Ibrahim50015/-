@@ -1111,7 +1111,9 @@ fun NotificationsSheet(
                             text = if (todayCount > 0) {
                                 tr(isArabic, "أحسنت! سجّلت $todayCount عملية اليوم", "Great! $todayCount logged today")
                             } else {
-                                tr(isArabic, "تذكير يومي (${settings.dailyReminderTime})", "Daily Reminder (${settings.dailyReminderTime})")
+                                val primaryTime = com.example.util.formatTime12Hour(settings.primaryDailyReminderTime(), isArabic)
+                                val cnt = settings.dailyReminderCount()
+                                tr(isArabic, "تذكير يومي ($cnt مرات • $primaryTime)", "Daily Reminder ($cnt× • $primaryTime)")
                             },
                             style = MaterialTheme.typography.labelLarge
                         )
